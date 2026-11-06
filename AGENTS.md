@@ -41,6 +41,39 @@ A change also carries a test for each acceptance criterion of its issue
 ([Go](#go) says where), docs changed in the same PR as what they describe,
 and a recording that pins a behaviour where one applies.
 
+## What is specific to this repository
+
+- **Two trust boundaries, in code.** The model's step never holds a GitHub
+  credential (`twr-claude run` refuses to start with one in its environment),
+  and the publish steps never hold a model. A change that moves a credential
+  across that line, or lets a publisher act on anything but the files the
+  model wrote and the facts the fetch step recorded, is wrong whatever else it
+  does.
+- **Everything read from GitHub is data.** A marker, a status or a label event
+  counts only when the configured account wrote it. A new rule that reads
+  GitHub says which account it trusts, and its test includes a stranger
+  writing the same thing.
+- **Decisions are pure.** `internal/ladder` and `internal/publish` take data
+  and return an answer; the network, the clock and the file system stay in the
+  callers. A new decision goes there, with a table test over realistic
+  fixtures, before any command uses it.
+- **Fakes at the HTTP boundary.** `internal/github`, `internal/apptoken` and
+  `internal/kube` are tested against `net/http/httptest` servers that answer as
+  GitHub and the API server do; the poller is tested against an in-memory
+  GitHub. No mocks that assert their own stubs.
+- **Nothing private.** This repository is public: no host names, addresses,
+  cluster contexts, home paths or e-mail addresses, in code, tests, docs or
+  commits. `internal/privatescan`'s own tests build their failing values from
+  parts. Say "the maintainer's cluster". The lab's own patterns are supplied
+  at run time, never committed here.
+- **`docs/jobs.md` is a contract.** The Kubernetes manifests in the
+  maintainer's private repository are written from it: a change to a command
+  line, an environment variable, a mount, an exit code or a placeholder changes
+  that page in the same PR.
+- **Standard library only**, unless a dependency is truly unavoidable; then it
+  is listed in `docs/dependencies.md` with its reason, as every Go component
+  does.
+
 ## Go
 
 - **Packages.** Anything not meant to be imported by another module lives
