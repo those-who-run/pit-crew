@@ -1,14 +1,12 @@
-# The service's image: built in Go's image, run from distroless's static image as
-# its non-root user. image.yml builds and smoke-tests it on every PR; a release
-# builds it again and image-publish.yml pushes that build. Both base images are
-# pinned by the digest of their multi-platform index (the tag beside it is for
-# people); Renovate bumps the tag and the digest together.
+# The small image, for the no-model steps: pit-crew and twr-claude, built in Go's
+# image, run from Debian's slim image with git and CA certificates, as a non-root
+# user. image.yml builds and smoke-tests it on every PR; a release builds it again
+# and image-publish.yml pushes that build. Both base images are pinned by the digest
+# of their multi-platform index (the tag beside it is for people); Renovate bumps
+# the tag and the digest together.
 #
-# A static binary (CGO_ENABLED=0) needs no C library, so the runtime image has
-# none. A component that needs cgo (logbook, for DuckDB: paddock ADR 0007) sets
-# CGO_ENABLED=1 in the build stage and runs from
-# gcr.io/distroless/cc-debian13:nonroot instead, which carries glibc; its go.yml
-# caller passes `cgo: true`.
+# Not distroless, which the template starts from: the fetch and publish steps run
+# git, which distroless's static image does not have. Nothing else is installed.
 
 FROM docker.io/library/golang:1.27.3-trixie@sha256:fbb7ae40b62ff8afe31662df570d39b4f5052ac32b90dae8e60d7657a20a74f4 AS build
 WORKDIR /src
@@ -16,18 +14,27 @@ WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
-# The version the binary reports (`-version`, GET /healthz): `dev` unless the build
-# passes one, as `docker build --build-arg VERSION=X.Y.Z .` does. image.yml in
-# those-who-run/.github passes VERSION=X.Y.Z when it builds on a release tag vX.Y.Z,
-# so a released image reports its version, as its org.opencontainers.image.version
-# label does; a pull request's image build passes none, and reports `dev`.
+# The version the binaries report (`-version`): `dev` unless the build passes one,
+# as `docker build --build-arg VERSION=X.Y.Z .` does. image.yml in
+# those-who-run/.github passes VERSION=X.Y.Z when it builds on a release tag.
 ARG VERSION=dev
-# -trimpath keeps the build machine's paths out of the binary.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/service ./cmd/pit-crew
+# -trimpath keeps the build machine's paths out of the binaries.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/pit-crew ./cmd/pit-crew \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/twr-claude ./cmd/twr-claude
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
-COPY --from=build /out/service /service
-# distroless's nonroot user (65532), by number so a runtime can check it isn't root.
+FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+# git for the clone and the push, CA certificates for GitHub. The package lists are
+# removed so the image carries no apt state; versions are Debian's at the base
+# image's digest.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --gid 65532 nonroot \
+ && useradd --uid 65532 --gid 65532 --create-home --home-dir /home/nonroot --shell /usr/sbin/nologin nonroot
+COPY --from=build /out/pit-crew /pit-crew
+COPY --from=build /out/twr-claude /twr-claude
+# The same numeric user as distroless's nonroot, so a runtime can check it isn't
+# root. HOME is writable only when the manifest mounts it; git needs no home.
 USER 65532:65532
-EXPOSE 8080
-ENTRYPOINT ["/service"]
+ENV HOME=/home/nonroot GIT_CONFIG_NOSYSTEM=1
+ENTRYPOINT ["/pit-crew"]

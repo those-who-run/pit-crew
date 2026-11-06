@@ -1,0 +1,84 @@
+# The runner image, for the agent step: twr-claude, Claude Code, git, Go, Python
+# with uv and pre-commit, Node, buf, kustomize and kubeconform, as a non-root user
+# with a home the manifest mounts. No container runtime: a review that needs one
+# says "not run here". image.yml builds it on every PR as `runner / build` and
+# release.yml publishes it as ghcr.io/those-who-run/twr-pit-crew-runner.
+#
+# Every download is pinned by version and checked against its published SHA-256;
+# the base image by the digest of its index. Debian's packages are at the base
+# image's digest. Renovate bumps the base; the tool versions are bumped by hand,
+# in the ARG lines below, with their checksums.
+
+FROM docker.io/library/golang:1.27.3-trixie@sha256:fbb7ae40b62ff8afe31662df570d39b4f5052ac32b90dae8e60d7657a20a74f4 AS build
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/twr-claude ./cmd/twr-claude
+
+# Node's Debian image: Node and npm for Claude Code, on the same Debian release as
+# the small image.
+FROM docker.io/library/node:22-trixie-slim@sha256:be1e2a3dc2c4fd68cdfadad2a696a280e0d2749098bee509230174d72fb768c6
+
+ARG CLAUDE_CODE_VERSION=2.1.319
+ARG GO_VERSION=1.27.3
+ARG GO_SHA256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+ARG UV_VERSION=0.13.7
+ARG UV_SHA256=c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83
+ARG BUF_VERSION=1.75.0
+ARG BUF_SHA256=fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b
+ARG KUSTOMIZE_VERSION=5.8.3
+ARG KUSTOMIZE_SHA256=cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+ARG KUBECONFORM_VERSION=0.8.0
+ARG KUBECONFORM_SHA256=9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+
+# git, make and a C compiler (the race detector needs cgo), Python, CA
+# certificates, and curl for the pinned downloads below, removed again after.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git make gcc libc6-dev python3 python3-venv ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Each tool: download, check the SHA-256, unpack to /usr/local.
+RUN set -eu \
+ && curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+ && echo "${GO_SHA256}  /tmp/go.tgz" | sha256sum -c - \
+ && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz \
+ && curl -fsSL -o /tmp/uv.tgz "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+ && echo "${UV_SHA256}  /tmp/uv.tgz" | sha256sum -c - \
+ && tar -C /tmp -xzf /tmp/uv.tgz && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/ && rm -rf /tmp/uv* \
+ && curl -fsSL -o /tmp/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64" \
+ && echo "${BUF_SHA256}  /tmp/buf" | sha256sum -c - \
+ && install -m 0755 /tmp/buf /usr/local/bin/buf && rm /tmp/buf \
+ && curl -fsSL -o /tmp/kustomize.tgz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+ && echo "${KUSTOMIZE_SHA256}  /tmp/kustomize.tgz" | sha256sum -c - \
+ && tar -C /usr/local/bin -xzf /tmp/kustomize.tgz kustomize && rm /tmp/kustomize.tgz \
+ && curl -fsSL -o /tmp/kubeconform.tgz "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+ && echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tgz" | sha256sum -c - \
+ && tar -C /usr/local/bin -xzf /tmp/kubeconform.tgz kubeconform && rm /tmp/kubeconform.tgz \
+ && apt-get purge -y curl && apt-get autoremove -y
+
+# Claude Code from npm at the pinned version, and pre-commit for `make check`.
+# npm's own integrity check covers the package against the registry's record.
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+ && npm cache clean --force \
+ && uv tool install --python python3 pre-commit \
+ && mv /root/.local/share/uv/tools /opt/uv-tools && ln -s /opt/uv-tools/pre-commit/bin/pre-commit /usr/local/bin/pre-commit
+
+COPY --from=build /out/twr-claude /usr/local/bin/twr-claude
+
+# The agent user: the same number as the small image's nonroot. The home is an
+# emptyDir the manifest mounts, so the CLI's state never outlives the Job.
+RUN groupadd --gid 65532 agent \
+ && useradd --uid 65532 --gid 65532 --create-home --home-dir /home/agent --shell /usr/sbin/nologin agent
+USER 65532:65532
+ENV HOME=/home/agent \
+    PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
+    GOTOOLCHAIN=local \
+    GOFLAGS=-mod=mod \
+    GIT_CONFIG_NOSYSTEM=1 \
+    DISABLE_AUTOUPDATER=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+WORKDIR /work/repo
+ENTRYPOINT ["/usr/local/bin/twr-claude"]
+CMD ["run"]

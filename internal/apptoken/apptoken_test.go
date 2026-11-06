@@ -194,7 +194,7 @@ func TestMintErrors(t *testing.T) {
 		setup func()
 		want  string
 	}{
-		{"no repositories", Config{ClientID: fake.clientID, KeyPath: good, APIURL: server.URL}, nil, nil, "no repositories"},
+		{"no repositories, owner or installation", Config{ClientID: fake.clientID, KeyPath: good, APIURL: server.URL}, nil, nil, "no repositories"},
 		{"not owner/name", Config{ClientID: fake.clientID, KeyPath: good, APIURL: server.URL}, []string{"ecu"}, nil, "not owner/name"},
 		{"two owners", Config{ClientID: fake.clientID, KeyPath: good, APIURL: server.URL}, []string{"a/x", "b/y"}, nil, "different owners"},
 		{"no key path", Config{ClientID: fake.clientID, APIURL: server.URL}, []string{"those-who-run/ecu"}, nil, "no key path"},
@@ -265,5 +265,29 @@ func TestInstallationWithNoID(t *testing.T) {
 	})
 	if _, err := Mint(t.Context(), server.Client(), cfg, []string{"those-who-run/ecu"}, nil); err == nil || !strings.Contains(err.Error(), "invalid character") {
 		t.Errorf("error %v", err)
+	}
+}
+
+func TestMintForTheWholeInstallation(t *testing.T) {
+	fake, server, key := setup(t)
+	cfg := Config{ClientID: fake.clientID, KeyPath: writePEM(t, "k.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(key)), APIURL: server.URL, Owner: "those-who-run"}
+	if _, err := Mint(t.Context(), server.Client(), cfg, nil, Permissions{"metadata": "read"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, scoped := fake.lastBody["repositories"]; scoped {
+		t.Errorf("repositories sent when none were asked for: %v", fake.lastBody)
+	}
+}
+
+func TestFromEnv(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	cfg, err := FromEnv(env(map[string]string{"APP_CLIENT_ID": "Iv1.x", "APP_KEY_FILE": "/secrets/app/private-key.pem", "APP_INSTALLATION_ID": "77"}), "those-who-run")
+	if err != nil || cfg.InstallationID != 77 || cfg.Owner != "those-who-run" || cfg.KeyPath == "" {
+		t.Errorf("%+v %v", cfg, err)
+	}
+	for _, bad := range []map[string]string{{}, {"APP_CLIENT_ID": "x"}, {"APP_CLIENT_ID": "x", "APP_KEY_FILE": "k", "APP_INSTALLATION_ID": "none"}} {
+		if _, err := FromEnv(env(bad), ""); err == nil {
+			t.Errorf("%v: no error", bad)
+		}
 	}
 }

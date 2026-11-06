@@ -1,10 +1,10 @@
 name: Image
 
-# The container image on every PR: image.yml in those-who-run/.github builds it from
-# the Dockerfile, smoke-tests it and pushes nothing. The job is required by name on
-# `main` as `image / build`; renaming the job leaves `main` waiting for a check that
-# never reports. A repository without an image deletes this file with the
-# Dockerfile, .dockerignore and release.yml (README.md, "Without an image").
+# The two container images on every PR: image.yml in those-who-run/.github builds
+# each from its Dockerfile, smoke-tests it and pushes nothing. The jobs are
+# required by name on `main` as `image / build` (the small image, Dockerfile) and
+# `runner / build` (the agent step's image, Dockerfile.runner); renaming either
+# leaves `main` waiting for a check that never reports.
 #
 # It runs in the merge queue too (merge_group), as ci.yml does, and still pushes
 # nothing there: this job may only read, and publishing is release.yml's.
@@ -24,8 +24,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The smoke test runs the image as it would be deployed: it must start as its
-  # non-root user and answer GET /healthz within 10 s.
+  # The small image: it must build, report its version and run as the non-root
+  # user. It serves nothing, so there is no endpoint to call.
   image:
     permissions:
       contents: read
@@ -33,16 +33,34 @@ jobs:
     with:
       smoke: |
         docker run --rm "$IMAGE" -version
+        docker run --rm --entrypoint /twr-claude "$IMAGE" -version
         user=$(docker image inspect --format '{{.Config.User}}' "$IMAGE")
         if [ "$user" != 65532:65532 ]; then
-          echo "the image runs as '$user', not distroless's nonroot user" >&2
+          echo "the image runs as '$user', not the nonroot user" >&2
           exit 1
         fi
-        id=$(docker run --detach --publish 127.0.0.1:8080:8080 "$IMAGE")
-        trap 'docker logs "$id"; docker rm --force "$id" >/dev/null' EXIT
-        for _ in $(seq 20); do
-          if curl --fail --silent --show-error http://127.0.0.1:8080/healthz; then exit 0; fi
-          sleep 0.5
+        docker run --rm --entrypoint git "$IMAGE" --version
+  # The runner image: the wrapper and every tool the agent step needs must be
+  # there, as the non-root user. The check is `runner / build`.
+  runner:
+    permissions:
+      contents: read
+    uses: those-who-run/.github/.github/workflows/image.yml@a575c2f0b39782e142fb7d4ac17082e05b407a2f # v0.2.15
+    with:
+      image: twr-pit-crew-runner
+      dockerfile: Dockerfile.runner
+      smoke: |
+        docker run --rm "$IMAGE" -version
+        user=$(docker image inspect --format '{{.Config.User}}' "$IMAGE")
+        if [ "$user" != 65532:65532 ]; then
+          echo "the image runs as '$user', not the agent user" >&2
+          exit 1
+        fi
+        for tool in "claude --version" "git --version" "go version" "python3 --version" "uv --version" "node --version" "buf --version" "kustomize version" "kubeconform -v" "pre-commit --version"; do
+          # shellcheck disable=SC2086
+          docker run --rm --entrypoint sh "$IMAGE" -c "$tool" || { echo "$tool failed" >&2; exit 1; }
         done
-        echo "GET /healthz did not answer within 10 s" >&2
-        exit 1
+        if docker run --rm --entrypoint sh "$IMAGE" -c 'command -v docker || command -v podman'; then
+          echo "the runner image carries a container runtime" >&2
+          exit 1
+        fi

@@ -564,3 +564,48 @@ func TestReady(t *testing.T) {
 		t.Errorf("empty list file %q", data)
 	}
 }
+
+func TestPoliciesFromEnv(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	p, err := PoliciesFromEnv(env(map[string]string{
+		"LADDER_MAINTAINER": owner, "LADDER_AUTHORS": builder + ", " + owner, "LADDER_COMMITTERS": "web-flow",
+		"LADDER_BUILD_REPOS": "those-who-run/ecu", "LADDER_COMPONENTS": "component: org=, component: deploy=those-who-run/paddock",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Pull.Reviewer != reviewer || p.Pull.Builder != builder || !reflect.DeepEqual(p.Pull.Authors, []string{builder, owner}) ||
+		!reflect.DeepEqual(p.Pull.Committers, []string{"web-flow"}) || p.Pull.HoldLabel != "hold" || p.IssueRepo != "those-who-run/paddock" {
+		t.Errorf("pull %+v, issue repo %s", p.Pull, p.IssueRepo)
+	}
+	if p.Build.Maintainer != owner || p.Build.ReadyLabel != "agent-ready" || p.Build.TriageLabel != "needs triage" || p.Build.Owner != "those-who-run" ||
+		!reflect.DeepEqual(p.Build.Components, map[string]string{"component: org": "", "component: deploy": "those-who-run/paddock"}) {
+		t.Errorf("build %+v", p.Build)
+	}
+	empty, err := PoliciesFromEnv(env(nil))
+	if err != nil || len(empty.Pull.Authors) != 0 || empty.Build.Maintainer != "" {
+		t.Errorf("empty %+v %v", empty, err)
+	}
+	if _, err := PoliciesFromEnv(env(map[string]string{"LADDER_COMPONENTS": "nonsense"})); err == nil {
+		t.Error("a bad component mapping")
+	}
+}
+
+func TestLimitsFromEnv(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	l, err := LimitsFromEnv(env(map[string]string{"POLL_START_JOBS": "true", "POLL_MAX_ACTIVE": "2", "POLL_DAILY_CAP": "20", "POLL_QUIET": "22:00-07:00",
+		"POLL_TZ": "Europe/Dublin", "POLL_BACKOFF_PLAN_LIMIT": "1h", "POLL_IDLE_GATE_CMD": "check-idle --quiet"}))
+	if err != nil || !l.StartJobs || l.MaxActive != 2 || l.DailyCap != 20 || len(l.Quiet) != 1 || l.Location.String() != "Europe/Dublin" ||
+		l.BackoffPlanLimit != time.Hour || l.BackoffLoginExpired != 6*time.Hour || !reflect.DeepEqual(l.IdleGateCmd, []string{"check-idle", "--quiet"}) {
+		t.Errorf("%+v %v", l, err)
+	}
+	d, err := LimitsFromEnv(env(nil))
+	if err != nil || d.StartJobs || d.MaxActive != 1 || d.DailyCap != 12 || d.Location != time.UTC {
+		t.Errorf("defaults %+v %v", d, err)
+	}
+	for _, bad := range []map[string]string{{"POLL_MAX_ACTIVE": "x"}, {"POLL_BACKOFF_PLAN_LIMIT": "soon"}, {"POLL_QUIET": "x"}, {"POLL_TZ": "Mars/Olympus"}} {
+		if _, err := LimitsFromEnv(env(bad)); err == nil {
+			t.Errorf("%v: no error", bad)
+		}
+	}
+}

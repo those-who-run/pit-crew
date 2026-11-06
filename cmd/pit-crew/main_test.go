@@ -2,130 +2,109 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"net"
+	"os"
+	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 )
 
 func env(vars map[string]string) func(string) string {
 	return func(key string) string { return vars[key] }
 }
 
-// readyLog collects the service's log and closes ready once it logs "serving", so a
-// test stops the service when it is listening rather than after a guessed delay.
-type readyLog struct {
-	mu    sync.Mutex
-	buf   bytes.Buffer
-	once  sync.Once
-	ready chan struct{}
-}
+const lanesJSON = "../../internal/lanes/testdata/lanes.json"
 
-func newReadyLog() *readyLog { return &readyLog{ready: make(chan struct{})} }
-
-// Write takes one record per call, as slog's handlers write them.
-func (l *readyLog) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if bytes.Contains(p, []byte(`"msg":"serving"`)) {
-		l.once.Do(func() { close(l.ready) })
-	}
-	return l.buf.Write(p)
-}
-
-func (l *readyLog) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.buf.String()
-}
-
-// heldAddress returns an address another listener holds for the rest of the test,
-// so listening on it fails at once, with no name to resolve.
-func heldAddress(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	return ln.Addr().String()
-}
-
-func TestVersion(t *testing.T) {
+func TestVersionAndHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run(t.Context(), []string{"-version"}, env(nil), &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	if code := run(t.Context(), []string{"-version"}, env(nil), strings.NewReader(""), &stdout, &stderr); code != 0 || strings.TrimSpace(stdout.String()) != version {
+		t.Errorf("exit %d, stdout %q", code, stdout.String())
 	}
-	if got := strings.TrimSpace(stdout.String()); got != version {
-		t.Errorf("printed %q, want %q", got, version)
+	for _, arg := range []string{"-h", "-help"} {
+		stderr.Reset()
+		if code := run(t.Context(), []string{arg}, env(nil), strings.NewReader(""), &stdout, &stderr); code != 0 || !strings.Contains(stderr.String(), "publish-review") {
+			t.Errorf("%s: exit %d, stderr %q", arg, code, stderr.String())
+		}
 	}
 }
 
-func TestHelpIsNotAnError(t *testing.T) {
-	for _, arg := range []string{"-h", "-help"} {
-		t.Run(arg, func(t *testing.T) {
-			var stderr bytes.Buffer
-			if code := run(t.Context(), []string{arg}, env(nil), &bytes.Buffer{}, &stderr); code != 0 {
-				t.Errorf("exit %d, want 0", code)
+func TestUsageErrors(t *testing.T) {
+	for _, args := range [][]string{{}, {"-nope"}, {"dance"}, {"poll", "extra"}} {
+		var stderr bytes.Buffer
+		if code := run(t.Context(), args, env(nil), strings.NewReader(""), &bytes.Buffer{}, &stderr); code != 2 {
+			t.Errorf("%v: exit %d", args, code)
+		}
+	}
+	var stderr bytes.Buffer
+	if code := run(t.Context(), []string{"lane"}, env(map[string]string{"LOG_LEVEL": "loud"}), strings.NewReader(""), &bytes.Buffer{}, &stderr); code != 2 || !strings.Contains(stderr.String(), "LOG_LEVEL") {
+		t.Errorf("exit %d, stderr %q", code, stderr.String())
+	}
+}
+
+// The cases of test_lanes.py's CommandLine class.
+func TestLane(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(t.Context(), []string{"lane", "--repo", "those-who-run/ecu", "--config", lanesJSON}, env(nil), strings.NewReader("M\tREADME.md\n"), &stdout, &stderr)
+	if code != 0 || stdout.String() != "light\n" {
+		t.Errorf("exit %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run(t.Context(), []string{"lane", "--repo", "those-who-run/ecu", "--config", lanesJSON}, env(nil), strings.NewReader("nonsense\n"), &stdout, &stderr)
+	if code != 2 || stdout.String() != "" || !strings.Contains(stderr.String(), "name-status") {
+		t.Errorf("exit %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+	for _, args := range [][]string{{"lane"}, {"lane", "--repo", "x"}, {"lane", "--repo", "x", "--config", filepath.Join(t.TempDir(), "none.json")}, {"lane", "--nope"}} {
+		if code := run(t.Context(), args, env(nil), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}); code != 2 {
+			t.Errorf("%v: exit %d", args, code)
+		}
+	}
+}
+
+// Every step stops on its configuration before it reaches the network.
+func TestStepsStopOnConfiguration(t *testing.T) {
+	cases := []struct {
+		command string
+		vars    map[string]string
+		want    string
+	}{
+		{"poll", map[string]string{"POLL_MAX_ACTIVE": "x"}, "POLL_MAX_ACTIVE"},
+		{"poll", map[string]string{"LADDER_COMPONENTS": "x"}, "LADDER_COMPONENTS"},
+		{"poll", map[string]string{}, "APP_CLIENT_ID"},
+		{"ready", map[string]string{"LADDER_COMPONENTS": "x"}, "LADDER_COMPONENTS"},
+		{"ready", map[string]string{}, "APP_CLIENT_ID"},
+		{"fetch", map[string]string{}, "FETCH_KIND"},
+		{"fetch", map[string]string{"FETCH_KIND": "build", "FETCH_REPO": "o/r", "FETCH_ISSUE": "1", "FETCH_ISSUE_REPO": "o/p", "FETCH_AGENT_REF": "v1",
+			"FETCH_BUILDER_NAME": "b", "FETCH_BUILDER_EMAIL": "b@example.com"}, "APP_CLIENT_ID"},
+		{"publish-review", map[string]string{}, "PUBLISH_NUMBER"},
+		{"publish-review", map[string]string{"PUBLISH_REPO": "o/r", "PUBLISH_NUMBER": "1", "PUBLISH_HEAD_SHA": strings.Repeat("a", 40), "PUBLISH_HOLD_DIR": "/hold"}, "APP_CLIENT_ID"},
+		{"publish-build", map[string]string{}, "PUBLISH_MODE"},
+		{"publish-build", map[string]string{"PUBLISH_MODE": "build", "PUBLISH_REPO": "o/r", "PUBLISH_ISSUE_REPO": "o/p", "PUBLISH_ISSUE": "1",
+			"PUBLISH_BUILDER_NAME": "b", "PUBLISH_BUILDER_EMAIL": "b@example.com", "PUBLISH_HOLD_DIR": "/hold"}, "APP_CLIENT_ID"},
+	}
+	for _, c := range cases {
+		t.Run(c.command+" "+c.want, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(t.Context(), []string{c.command}, env(c.vars), strings.NewReader(""), &stdout, &stderr); code != 2 {
+				t.Errorf("exit %d, stderr %q", code, stderr.String())
 			}
-			if !strings.Contains(stderr.String(), "-version") {
-				t.Errorf("stderr %q has no usage", stderr.String())
+			if !strings.Contains(stderr.String(), c.want) {
+				t.Errorf("stderr %q does not name %s", stderr.String(), c.want)
 			}
 		})
 	}
 }
 
-func TestAnUnknownFlagIsAUsageError(t *testing.T) {
+// With an App configured but no key file, the token cannot be minted and the
+// step still stops before any step-specific work.
+func TestStepsStopWhenTheKeyIsMissing(t *testing.T) {
+	keyless := map[string]string{"APP_CLIENT_ID": "Iv1.x", "APP_KEY_FILE": filepath.Join(t.TempDir(), "none.pem"),
+		"GITHUB_API_URL": "http://127.0.0.1:1", "FETCH_KIND": "build", "FETCH_REPO": "o/r", "FETCH_ISSUE": "1", "FETCH_ISSUE_REPO": "o/p",
+		"FETCH_AGENT_REF": "v1", "FETCH_BUILDER_NAME": "b", "FETCH_BUILDER_EMAIL": "b@example.com"}
 	var stderr bytes.Buffer
-	if code := run(t.Context(), []string{"-nope"}, env(nil), &bytes.Buffer{}, &stderr); code != 2 {
-		t.Errorf("exit %d, want 2", code)
+	if code := run(t.Context(), []string{"fetch"}, env(keyless), strings.NewReader(""), &bytes.Buffer{}, &stderr); code != 2 {
+		t.Errorf("exit %d, stderr %q", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "-nope") {
-		t.Errorf("stderr %q does not name the flag", stderr.String())
-	}
-}
-
-func TestABadConfigurationIsAUsageError(t *testing.T) {
-	var stderr bytes.Buffer
-	code := run(t.Context(), nil, env(map[string]string{"LOG_LEVEL": "loud"}), &bytes.Buffer{}, &stderr)
-	if code != 2 || !strings.Contains(stderr.String(), "LOG_LEVEL") {
-		t.Errorf("exit %d, stderr %q; want 2 and LOG_LEVEL named", code, stderr.String())
-	}
-}
-
-func TestAServiceThatCannotStartExitsOne(t *testing.T) {
-	var stdout bytes.Buffer
-	code := run(t.Context(), nil, env(map[string]string{"ADDR": heldAddress(t)}), &stdout, &bytes.Buffer{})
-	if code != 1 || !strings.Contains(stdout.String(), `"msg":"stopped"`) {
-		t.Errorf("exit %d, log %q; want 1 and the failure logged", code, stdout.String())
-	}
-}
-
-func TestServesUntilCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	stdout := newReadyLog()
-	exit := make(chan int, 1)
-	go func() {
-		exit <- run(ctx, nil, env(map[string]string{"ADDR": "127.0.0.1:0"}), stdout, &bytes.Buffer{})
-	}()
-	// The timeouts only stop a hung test; the service is cancelled once it serves.
-	select {
-	case <-stdout.ready:
-	case code := <-exit:
-		t.Fatalf("exit %d before serving, log %q", code, stdout.String())
-	case <-time.After(10 * time.Second):
-		t.Fatal("not serving after 10 s")
-	}
-	cancel()
-	select {
-	case code := <-exit:
-		if code != 0 || !strings.Contains(stdout.String(), `"msg":"shutting down"`) {
-			t.Errorf("exit %d, log %q; want 0 and the shutdown logged", code, stdout.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("still running 10 s after cancel")
+	if _, err := os.Stat("/work"); err == nil {
+		t.Error("the step wrote to /work")
 	}
 }

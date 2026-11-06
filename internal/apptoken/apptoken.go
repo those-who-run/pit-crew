@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,8 +38,12 @@ type Config struct {
 	// KeyPath is the PEM file holding the App's private key.
 	KeyPath string
 	// InstallationID is the installation to mint for. Zero means the App's
-	// installation on the organisation that owns the first repository asked for.
+	// installation on Owner, or on the organisation that owns the first
+	// repository asked for.
 	InstallationID int64
+	// Owner is the organisation, for the installation lookup when no repository
+	// is named.
+	Owner string
 	// APIURL is the API's base URL; empty means DefaultAPIURL.
 	APIURL string
 	// Now is the clock; nil means time.Now.
@@ -59,15 +64,19 @@ func (t Token) String() string { return "<installation token>" }
 type Permissions map[string]string
 
 // Mint returns an installation token for repos (as owner/name; all on one owner)
-// with the permissions asked for. Each call mints a fresh token; GitHub's expire
-// after an hour.
+// with the permissions asked for. No repositories means every repository the
+// installation covers, which the poller needs to list them. Each call mints a
+// fresh token; GitHub's expire after an hour.
 func Mint(ctx context.Context, client *http.Client, cfg Config, repos []string, permissions Permissions) (Token, error) {
-	if len(repos) == 0 {
-		return Token{}, errors.New("apptoken: no repositories to scope the token to")
-	}
 	owner, names, err := splitRepos(repos)
 	if err != nil {
 		return Token{}, err
+	}
+	if owner == "" {
+		owner = cfg.Owner
+	}
+	if owner == "" && cfg.InstallationID == 0 {
+		return Token{}, errors.New("apptoken: no repositories, owner or installation to mint for")
 	}
 	key, err := loadKey(cfg.KeyPath)
 	if err != nil {
@@ -235,7 +244,10 @@ func findInstallation(ctx context.Context, client *http.Client, api, jwt, owner 
 }
 
 func createToken(ctx context.Context, client *http.Client, api, jwt string, installation int64, names []string, permissions Permissions) (Token, error) {
-	body := map[string]any{"repositories": names}
+	body := map[string]any{}
+	if len(names) > 0 {
+		body["repositories"] = names
+	}
 	if len(permissions) > 0 {
 		body["permissions"] = permissions
 	}
@@ -254,4 +266,21 @@ func createToken(ctx context.Context, client *http.Client, api, jwt string, inst
 		return Token{}, errors.New("apptoken: the response holds no token")
 	}
 	return Token{Value: token.Token, ExpiresAt: token.ExpiresAt}, nil
+}
+
+// FromEnv reads the App's configuration: APP_CLIENT_ID, APP_KEY_FILE,
+// APP_INSTALLATION_ID (optional) and GITHUB_API_URL.
+func FromEnv(getenv func(string) string, owner string) (Config, error) {
+	cfg := Config{ClientID: getenv("APP_CLIENT_ID"), KeyPath: getenv("APP_KEY_FILE"), APIURL: getenv("GITHUB_API_URL"), Owner: owner}
+	if cfg.ClientID == "" || cfg.KeyPath == "" {
+		return cfg, errors.New("APP_CLIENT_ID and APP_KEY_FILE are needed to mint a token")
+	}
+	if v := getenv("APP_INSTALLATION_ID"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 {
+			return cfg, fmt.Errorf("APP_INSTALLATION_ID: %q is not an installation ID", v)
+		}
+		cfg.InstallationID = id
+	}
+	return cfg, nil
 }
