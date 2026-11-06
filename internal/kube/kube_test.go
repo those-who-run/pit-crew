@@ -44,7 +44,7 @@ func TestNew(t *testing.T) {
 		}
 	})
 	t.Run("in a pod, the service account files are missing here", func(t *testing.T) {
-		_, err := New(Config{}, env(map[string]string{"KUBERNETES_SERVICE_HOST": "10.0.0.1", "KUBERNETES_SERVICE_PORT": "443"}))
+		_, err := New(Config{}, env(map[string]string{"KUBERNETES_SERVICE_HOST": "192.0.2.1", "KUBERNETES_SERVICE_PORT": "443"}))
 		if err == nil || !strings.Contains(err.Error(), "token") {
 			t.Errorf("error %v", err)
 		}

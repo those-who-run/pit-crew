@@ -1,0 +1,105 @@
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": {
+    "labels": {"app.kubernetes.io/name": "twr-agents"}
+  },
+  "spec": {
+    "backoffLimit": 0,
+    "activeDeadlineSeconds": 2400,
+    "ttlSecondsAfterFinished": 172800,
+    "template": {
+      "metadata": {"labels": {"app.kubernetes.io/name": "twr-agents", "app.kubernetes.io/component": "{{kind}}"}},
+      "spec": {
+        "restartPolicy": "Never",
+        "automountServiceAccountToken": false,
+        "securityContext": {"runAsNonRoot": true, "runAsUser": 65532, "runAsGroup": 65532, "fsGroup": 65532, "seccompProfile": {"type": "RuntimeDefault"}},
+        "volumes": [
+          {"name": "data", "emptyDir": {"sizeLimit": "256Mi"}},
+          {"name": "repo", "emptyDir": {"sizeLimit": "2Gi"}},
+          {"name": "agent", "emptyDir": {"sizeLimit": "256Mi"}},
+          {"name": "out", "emptyDir": {"sizeLimit": "256Mi"}},
+          {"name": "home", "emptyDir": {"sizeLimit": "256Mi"}},
+          {"name": "tmp", "emptyDir": {"sizeLimit": "256Mi"}},
+          {"name": "reviewer-key", "secret": {"secretName": "twr-reviewer-key"}},
+          {"name": "claude-token", "secret": {"secretName": "twr-claude-token"}},
+          {"name": "hold", "persistentVolumeClaim": {"claimName": "twr-agents-hold"}}
+        ],
+        "initContainers": [
+          {
+            "name": "fetch",
+            "image": "ghcr.io/those-who-run/twr-pit-crew:0.1.0",
+            "args": ["fetch"],
+            "env": [
+              {"name": "FETCH_KIND", "value": "{{kind}}"},
+              {"name": "FETCH_REPO", "value": "{{repo}}"},
+              {"name": "FETCH_NUMBER", "value": "{{number}}"},
+              {"name": "FETCH_HEAD_SHA", "value": "{{head_sha}}"},
+              {"name": "FETCH_AGENT_REF", "value": "v0.2.16"},
+              {"name": "APP_CLIENT_ID", "valueFrom": {"configMapKeyRef": {"name": "twr-agents", "key": "reviewer-client-id"}}},
+              {"name": "APP_KEY_FILE", "value": "/secrets/app/private-key.pem"}
+            ],
+            "securityContext": {"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": {"drop": ["ALL"]}},
+            "resources": {"requests": {"cpu": "100m", "memory": "64Mi"}, "limits": {"cpu": "500m", "memory": "256Mi"}},
+            "volumeMounts": [
+              {"name": "data", "mountPath": "/work/data"},
+              {"name": "repo", "mountPath": "/work/repo"},
+              {"name": "agent", "mountPath": "/work/agent"},
+              {"name": "out", "mountPath": "/work/out"},
+              {"name": "tmp", "mountPath": "/tmp"},
+              {"name": "reviewer-key", "mountPath": "/secrets/app", "readOnly": true}
+            ]
+          },
+          {
+            "name": "agent",
+            "image": "ghcr.io/those-who-run/twr-pit-crew-runner:0.1.0",
+            "args": ["run"],
+            "env": [
+              {"name": "TWR_CLAUDE_BRIEF", "value": "/work/agent/agent/agents/twr-reviewer.md"},
+              {"name": "TWR_CLAUDE_MAX_TURNS", "value": "80"},
+              {"name": "HOME", "value": "/home/agent"}
+            ],
+            "securityContext": {"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": {"drop": ["ALL"]}},
+            "resources": {"requests": {"cpu": "500m", "memory": "1Gi"}, "limits": {"cpu": "2", "memory": "2560Mi"}},
+            "volumeMounts": [
+              {"name": "data", "mountPath": "/work/data", "readOnly": true},
+              {"name": "repo", "mountPath": "/work/repo"},
+              {"name": "agent", "mountPath": "/work/agent", "readOnly": true},
+              {"name": "out", "mountPath": "/work/out"},
+              {"name": "home", "mountPath": "/home/agent"},
+              {"name": "tmp", "mountPath": "/tmp"},
+              {"name": "claude-token", "mountPath": "/secrets/claude", "readOnly": true}
+            ]
+          }
+        ],
+        "containers": [
+          {
+            "name": "publish",
+            "image": "ghcr.io/those-who-run/twr-pit-crew:0.1.0",
+            "args": ["publish-review"],
+            "env": [
+              {"name": "PUBLISH_REPO", "value": "{{repo}}"},
+              {"name": "PUBLISH_NUMBER", "value": "{{number}}"},
+              {"name": "PUBLISH_HEAD_SHA", "value": "{{head_sha}}"},
+              {"name": "PUBLISH_HOLD_DIR", "value": "/hold"},
+              {"name": "PUBLISH_PATTERNS_FILE", "value": "/etc/pit-crew/private/patterns"},
+              {"name": "APP_CLIENT_ID", "valueFrom": {"configMapKeyRef": {"name": "twr-agents", "key": "reviewer-client-id"}}},
+              {"name": "APP_KEY_FILE", "value": "/secrets/app/private-key.pem"}
+            ],
+            "securityContext": {"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": {"drop": ["ALL"]}},
+            "resources": {"requests": {"cpu": "100m", "memory": "64Mi"}, "limits": {"cpu": "500m", "memory": "256Mi"}},
+            "volumeMounts": [
+              {"name": "data", "mountPath": "/work/data", "readOnly": true},
+              {"name": "repo", "mountPath": "/work/repo", "readOnly": true},
+              {"name": "agent", "mountPath": "/work/agent", "readOnly": true},
+              {"name": "out", "mountPath": "/work/out", "readOnly": true},
+              {"name": "tmp", "mountPath": "/tmp"},
+              {"name": "hold", "mountPath": "/hold"},
+              {"name": "reviewer-key", "mountPath": "/secrets/app", "readOnly": true}
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

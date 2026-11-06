@@ -609,3 +609,27 @@ func TestLimitsFromEnv(t *testing.T) {
 		}
 	}
 }
+
+// The example template in examples/ is what the manifests start from: it must
+// render, and name the containers the contract names.
+func TestTheExampleTemplateRenders(t *testing.T) {
+	template, err := os.ReadFile(filepath.Join("..", "..", "examples", "review.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := reviewUnit(Candidate{Pull: pull("those-who-run/ecu", 31, builder, head)})
+	out, err := RenderJob(template, u.name, u.kind, u.values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(out)
+	for _, want := range []string{`"name":"review-ecu-31-1f0c5d2e-f0"`, `"name":"fetch"`, `"name":"` + AgentContainer + `"`, `"name":"publish"`,
+		`"FETCH_HEAD_SHA","value":"` + head + `"`, `"automountServiceAccountToken":false`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the rendered example lacks %s", want)
+		}
+	}
+	if strings.Contains(text, "{{") {
+		t.Errorf("a placeholder is left: %s", text)
+	}
+}

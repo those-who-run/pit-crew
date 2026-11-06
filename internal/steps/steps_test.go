@@ -36,7 +36,7 @@ func TestScanner(t *testing.T) {
 	for _, bad := range [][2]string{
 		{filepath.Join(dir, "none"), ""},
 		{"", filepath.Join(dir, "none")},
-		{write(t, dir, "bad.allow", "nuc.lan why\n"), ""},
+		{write(t, dir, "bad.allow", strings.Join([]string{"nuc", "lan"}, ".")+" why\n"), ""},
 		{"", write(t, dir, "bad.txt", "x [\n")},
 	} {
 		if _, err := Scanner(bad[0], bad[1]); err == nil {

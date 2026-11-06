@@ -30,7 +30,7 @@ const (
 
 // Config says how to reach the API server.
 type Config struct {
-	// APIURL is the server, such as https://10.43.0.1:443; empty means the one
+	// APIURL is the server, such as https://192.0.2.1:443; empty means the one
 	// KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT name.
 	APIURL string
 	// TokenFile is the bearer token's file; empty means the service account's.

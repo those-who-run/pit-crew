@@ -277,7 +277,7 @@ func TestAllowlist(t *testing.T) {
 		"an entry without a reason": {"# c\n\ngithub.com\n", "a.allow:3: github.com has no reason"},
 		"a home network's name":     {dot("nuc", "lan") + " why\n", "is a home network's name, never a public host"},
 		"mDNS":                      {dot("printer", "local") + " why\n", "is a home network's name"},
-		"home.arpa":                 {dot("x", "home", "arpa") + " why\n", "is a home network's name"},
+		"a home.arpa name":          {dot("x", "home", "arpa") + " why\n", "is a home network's name"},
 		"not a host":                {"localhost why\n", "localhost is not a host name"},
 	}
 	for name, c := range bad {

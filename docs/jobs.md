@@ -170,7 +170,8 @@ the daily cap counts Jobs by `creationTimestamp`, so the TTL must be at least
 
 ### The Job template
 
-A JSON Job (the API form; a kustomize ConfigMap may hold it), one per kind. The
+A JSON Job (the API form; a kustomize ConfigMap may hold it), one per kind;
+[`examples/review.json`](../examples/review.json) is one for the review kind. The
 poller parses it, replaces placeholders in every string value, and adds labels and
 annotations. Placeholders, written `{{name}}`:
 
