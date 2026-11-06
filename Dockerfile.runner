@@ -62,8 +62,9 @@ RUN set -eu \
 # npm's own integrity check covers the package against the registry's record.
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && npm cache clean --force \
- && uv tool install --python python3 pre-commit \
- && mv /root/.local/share/uv/tools /opt/uv-tools && ln -s /opt/uv-tools/pre-commit/bin/pre-commit /usr/local/bin/pre-commit
+ && UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_PREFERENCE=only-system \
+    uv tool install --python /usr/bin/python3 pre-commit \
+ && chmod -R a+rX /opt/uv-tools
 
 COPY --from=build /out/twr-claude /usr/local/bin/twr-claude
 
