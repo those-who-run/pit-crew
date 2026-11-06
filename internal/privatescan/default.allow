@@ -1,0 +1,29 @@
+# The public hosts a review comment or a pull request may name. One per line: the
+# host, then why it is here. An entry allows the host and every name under it. This
+# is the format of scripts/private_scan.allow in those-who-run/paddock, whose rules
+# this package ports; a job adds its own entries with an allow file at run time.
+
+# Code, images and packages.
+github.com                The organisation's code host, and noreply commit addresses.
+raw.githubusercontent.com GitHub's raw files.
+ghcr.io                   GitHub's container registry, where the org's images are published.
+docker.io                 Docker Hub, where pinned base images come from.
+golang.org                Go's module paths (golang.org/x/...).
+go.dev                    Go's documentation and package index (pkg.go.dev).
+pypi.org                  The Python package index.
+npmjs.com                 The npm registry.
+buf.build                 Buf's registry and documentation.
+anthropic.com             The noreply address in the Co-Authored-By trailer of agent commits.
+claude.com                Claude Code's site, linked in the line Claude Code adds to a PR body.
+
+# Kubernetes and Argo CD API groups and label prefixes, which are names, not hosts.
+k8s.io                    Kubernetes API groups (batch.k8s.io, networking.k8s.io).
+kubernetes.io             Kubernetes' well-known labels and its documentation.
+argoproj.io               Argo CD's annotations.
+
+# Documentation and specifications a review cites.
+docs.nats.io              NATS's documentation.
+www.conventionalcommits.org The Conventional Commits specification.
+protobuf.dev              Protocol Buffers' documentation.
+connectrpc.com            Connect's documentation.
+duckdb.org                DuckDB's documentation.
