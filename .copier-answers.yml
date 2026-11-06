@@ -1,0 +1,12 @@
+# Written by copier from those-who-run/chassis: what `copier update` needs to bring
+# the template's later changes in. Change it only through copier.
+_commit: v1.0.5
+_src_path: https://github.com/those-who-run/chassis.git
+description: 'The no-model machinery of the Those Who Run merge ladder: the poller
+    that picks work, the fetch step that prepares a checkout, the publish steps that
+    check an agent''s output before anything reaches GitHub, and `twr-claude`, the
+    wrapper that runs Claude Code on the maintainer''s subscription. It also holds
+    the runner image the agent step runs in.'
+image: true
+name: pit-crew
+title: Pit crew
