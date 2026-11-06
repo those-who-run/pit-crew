@@ -1,0 +1,18 @@
+[
+  {"event": "labeled", "actor": {"login": "someone-else"}, "label": {"name": "needs triage"}, "created_at": "2026-11-06T09:00:00Z"},
+  {"event": "unlabeled", "actor": {"login": "octo-maintainer"}, "label": {"name": "needs triage"}, "created_at": "2026-11-06T09:05:00Z"},
+  {"event": "labeled", "actor": {"login": "octo-maintainer"}, "label": {"name": "agent-ready"}, "created_at": "2026-11-06T09:10:00Z"},
+  {"event": "commented", "actor": {"login": "octo-maintainer"}, "created_at": "2026-11-06T09:11:00Z"},
+  {"event": "cross-referenced", "actor": {"login": "twr-builder[bot]"}, "created_at": "2026-11-06T09:40:00Z",
+   "source": {"type": "issue", "issue": {
+     "number": 31, "title": "feat(race): box-this-lap callout", "body": "x\n\nCloses those-who-run/paddock#232.\n",
+     "user": {"login": "twr-builder[bot]"}, "state": "open", "html_url": "https://github.com/those-who-run/ecu/pull/31",
+     "created_at": "2026-11-06T09:40:00Z", "pull_request": {"merged_at": null},
+     "repository": {"full_name": "those-who-run/ecu"}}}},
+  {"event": "cross-referenced", "actor": {"login": "octo-maintainer"}, "created_at": "2026-11-06T09:50:00Z",
+   "source": {"type": "issue", "issue": {
+     "number": 240, "title": "A related issue", "body": "see #232",
+     "user": {"login": "octo-maintainer"}, "state": "open", "html_url": "https://github.com/those-who-run/paddock/issues/240",
+     "created_at": "2026-11-06T09:50:00Z",
+     "repository": {"full_name": "those-who-run/paddock"}}}}
+]

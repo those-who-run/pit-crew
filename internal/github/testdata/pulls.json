@@ -1,0 +1,30 @@
+[
+  {
+    "number": 31,
+    "title": "feat(race): box-this-lap callout",
+    "body": "## What changed\n\nCloses those-who-run/paddock#232.\n",
+    "user": {"login": "twr-builder[bot]", "type": "Bot"},
+    "head": {"ref": "agent/232-fuel-callouts", "sha": "1f0c5d2e9a7b4c3d8e6f1a2b3c4d5e6f7a8b9c0d", "repo": {"full_name": "those-who-run/ecu"}},
+    "base": {"ref": "main", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "draft": false,
+    "labels": [{"name": "parity"}],
+    "html_url": "https://github.com/those-who-run/ecu/pull/31",
+    "state": "open",
+    "merged_at": null,
+    "created_at": "2026-11-06T09:10:00Z"
+  },
+  {
+    "number": 30,
+    "title": "docs: tidy",
+    "body": null,
+    "user": {"login": "someone-else", "type": "User"},
+    "head": {"ref": "patch-1", "sha": "0000000000000000000000000000000000000001", "repo": null},
+    "base": {"ref": "main", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "draft": true,
+    "labels": [],
+    "html_url": "https://github.com/those-who-run/ecu/pull/30",
+    "state": "open",
+    "merged_at": null,
+    "created_at": "2026-11-05T09:10:00Z"
+  }
+]
