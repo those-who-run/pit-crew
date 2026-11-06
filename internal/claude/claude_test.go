@@ -1,0 +1,409 @@
+package claude
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+// stub writes an executable that records its arguments, its environment and its
+// standard input under dir, then runs the script given.
+func stub(t *testing.T, dir, name, script string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	text := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$STUB_DIR/" + name + ".args\"\nenv > \"$STUB_DIR/" + name + ".env\"\ncat > \"$STUB_DIR/" + name + ".stdin\"\n" + script
+	if err := os.WriteFile(path, []byte(text), 0o700); err != nil { //nolint:gosec // a test's own executable
+		t.Fatal(err)
+	}
+	return path
+}
+
+func read(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // a file in the test's temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func write(t *testing.T, path, text string) string {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+const token = "sk-ant-oat01-" + "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
+
+func runConfig(t *testing.T, dir, script string) RunConfig {
+	t.Helper()
+	out := filepath.Join(dir, "out")
+	_ = os.Mkdir(out, 0o700)
+	return RunConfig{
+		TokenFile: write(t, filepath.Join(dir, "token"), token+"\n"),
+		Brief:     write(t, filepath.Join(dir, "brief.md"), "---\nname: twr-reviewer\ntools: Read\n---\n\nYou are the Reviewer.\n"),
+		Task:      write(t, filepath.Join(dir, "task.md"), "## This task\n\nReview those-who-run/ecu#31.\n"),
+		WorkDir:   dir,
+		AddDirs:   []string{"/work/data", "/work/out"},
+		Tools:     "Read,Grep,Glob,Write,Bash",
+		MaxTurns:  80,
+		Model:     "opus",
+		Timeout:   time.Minute,
+		Bin:       stub(t, dir, "claude", script),
+		Out:       out,
+	}
+}
+
+const okResult = `{"type":"result","subtype":"success","is_error":false,"num_turns":12,"duration_ms":4200,"total_cost_usd":0.42,"result":"done","session_id":"x"}`
+
+func TestRunStartsClaudeWithTheTokenAlone(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runConfig(t, dir, "echo '"+okResult+"'\n")
+	environ := []string{"STUB_DIR=" + dir, "PATH=/usr/bin:/bin", "HOME=" + dir, "ANTHROPIC_API_KEY=x", "ANTHROPIC_AUTH_TOKEN=x",
+		"CLAUDE_CODE_USE_BEDROCK=1", "AWS_SECRET_ACCESS_KEY=y", "GITHUB_REPOSITORY=those-who-run/ecu", "LANG=C.UTF-8"}
+	var stderr bytes.Buffer
+	if code := Run(t.Context(), cfg, environ, &stderr); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	args := strings.Split(strings.TrimSpace(read(t, filepath.Join(dir, "claude.args"))), "\n")
+	want := []string{"-p", "--restricted", "--strict-mcp-config", "--permission-mode", "dontAsk", "--permission-prompts", "none",
+		"--tools", "Read,Grep,Glob,Write,Bash", "--max-turns", "80", "--output-format", "json", "--no-session-persistence",
+		"--model", "opus", "--add-dir", "/work/data", "--add-dir", "/work/out"}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("args %q\nwant %q", args, want)
+	}
+	env := read(t, filepath.Join(dir, "claude.env"))
+	for _, line := range []string{"CLAUDE_CODE_OAUTH_TOKEN=" + token, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1", "DISABLE_AUTOUPDATER=1",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CLAUDE_CONFIG_DIR=" + filepath.Join(dir, ".claude"), "LANG=C.UTF-8"} {
+		if !strings.Contains(env, line+"\n") {
+			t.Errorf("the environment lacks %s", line)
+		}
+	}
+	for _, gone := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "AWS_SECRET_ACCESS_KEY", "GITHUB_REPOSITORY"} {
+		if strings.Contains(env, gone+"=") {
+			t.Errorf("the environment still has %s", gone)
+		}
+	}
+	prompt := read(t, filepath.Join(dir, "claude.stdin"))
+	if prompt != "You are the Reviewer.\n\n## This task\n\nReview those-who-run/ecu#31.\n" {
+		t.Errorf("prompt %q", prompt)
+	}
+	if strings.Contains(stderr.String(), token) {
+		t.Error("the token was printed")
+	}
+	var result Result
+	if err := json.Unmarshal([]byte(read(t, filepath.Join(dir, "out", "agent.json"))), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != "ok" || result.NumTurns != 12 || result.CostUSD != 0.42 || result.DurationMS != 4200 || result.Exit != 0 {
+		t.Errorf("agent.json %+v", result)
+	}
+}
+
+func TestRunRefusesWithAGitHubToken(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runConfig(t, dir, "echo '"+okResult+"'\n")
+	for _, kv := range []string{"GH_TOKEN=x", "GITHUB_TOKEN=x", "GH_ENTERPRISE_TOKEN=x", "SOMETHING=ghs_" + strings.Repeat("a1B2", 9), "OTHER=github_pat_" + strings.Repeat("a1_B", 12)} {
+		var stderr bytes.Buffer
+		if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir, kv}, &stderr); code != ExitRefused {
+			t.Errorf("%s: exit %d, want refused", kv, code)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "claude.args")); err == nil {
+			t.Errorf("%s: claude was started", kv)
+		}
+		if strings.Contains(stderr.String(), "ghs_") || strings.Contains(stderr.String(), "github_pat_") {
+			t.Errorf("%s: the token's value was printed: %s", kv, stderr.String())
+		}
+	}
+	if name := GitHubTokenIn([]string{"GH_TOKEN=", "PATH=/bin", "GH_REPO=those-who-run/ecu"}); name != "" {
+		t.Errorf("an empty GH_TOKEN or a non-token GH_ variable refused: %s", name)
+	}
+}
+
+func TestRunOutcomes(t *testing.T) {
+	cases := []struct {
+		name    string
+		script  string
+		want    int
+		outcome string
+	}{
+		{"login expired, said on stderr", "echo 'Login expired · Please run /login' >&2\nexit 1\n", ExitLoginExpired, "login-expired"},
+		{"token revoked, said in the result", `echo '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Failed to authenticate: OAuth token revoked"]}'` + "\nexit 1\n", ExitLoginExpired, "login-expired"},
+		{"the session limit", `echo '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["You have hit your session limit"]}'` + "\nexit 1\n", ExitPlanLimit, "plan-limit"},
+		{"a 429", "echo 'API Error: Request rejected (429)' >&2\nexit 1\n", ExitPlanLimit, "plan-limit"},
+		{"the turn limit", `echo '{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":80}'` + "\nexit 1\n", ExitMaxTurns, "max-turns"},
+		{"an error result with exit 0", `echo '{"type":"result","subtype":"error_during_execution","is_error":true}'` + "\n", ExitFailed, "failed"},
+		{"a plain failure", "echo nope >&2\nexit 1\n", ExitFailed, "failed"},
+		{"the result's own text does not fool it", `echo '{"type":"result","subtype":"success","is_error":false,"result":"line 401 and 429 are fine"}'` + "\n", ExitOK, "ok"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := runConfig(t, dir, c.script)
+			var stderr bytes.Buffer
+			if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr); code != c.want {
+				t.Errorf("exit %d, want %d: %s", code, c.want, stderr.String())
+			}
+			if !strings.Contains(read(t, filepath.Join(dir, "out", "agent.json")), `"outcome": "`+c.outcome+`"`) {
+				t.Errorf("agent.json %s", read(t, filepath.Join(dir, "out", "agent.json")))
+			}
+		})
+	}
+}
+
+func TestRunTimesOut(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runConfig(t, dir, "exec sleep 5\n")
+	cfg.Timeout = 200 * time.Millisecond
+	var stderr bytes.Buffer
+	if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr); code != ExitTimeout {
+		t.Errorf("exit %d, want %d", code, ExitTimeout)
+	}
+}
+
+func TestRunConfigErrors(t *testing.T) {
+	dir := t.TempDir()
+	good := runConfig(t, dir, "")
+	cases := []struct {
+		name   string
+		change func(*RunConfig)
+	}{
+		{"no token file", func(c *RunConfig) { c.TokenFile = filepath.Join(dir, "none") }},
+		{"an empty token", func(c *RunConfig) { c.TokenFile = write(t, filepath.Join(dir, "empty"), "\n") }},
+		{"no brief", func(c *RunConfig) { c.Brief = filepath.Join(dir, "none") }},
+		{"no task", func(c *RunConfig) { c.Task = filepath.Join(dir, "none") }},
+		{"no claude", func(c *RunConfig) { c.Bin = filepath.Join(dir, "none") }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := good
+			c.change(&cfg)
+			if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &bytes.Buffer{}); code != ExitConfig {
+				t.Errorf("exit %d, want %d", code, ExitConfig)
+			}
+		})
+	}
+}
+
+func TestRunConfigFromEnv(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	cfg, err := RunConfigFromEnv(env(map[string]string{"TWR_CLAUDE_BRIEF": "agent/agents/twr-reviewer.md", "TWR_CLAUDE_MAX_TURNS": "40", "TWR_CLAUDE_TIMEOUT": "10m", "TWR_CLAUDE_ADD_DIRS": "/a, /b,"}))
+	if err != nil || cfg.MaxTurns != 40 || cfg.Timeout != 10*time.Minute || !reflect.DeepEqual(cfg.AddDirs, []string{"/a", "/b"}) || cfg.Tools == "" || cfg.TokenFile == "" {
+		t.Errorf("%+v %v", cfg, err)
+	}
+	for _, bad := range []map[string]string{
+		{},
+		{"TWR_CLAUDE_BRIEF": "x", "TWR_CLAUDE_MAX_TURNS": "0"},
+		{"TWR_CLAUDE_BRIEF": "x", "TWR_CLAUDE_TIMEOUT": "soon"},
+	} {
+		if _, err := RunConfigFromEnv(env(bad)); err == nil {
+			t.Errorf("%v: no error", bad)
+		}
+	}
+}
+
+func TestPrompt(t *testing.T) {
+	if got := Prompt([]byte("No front matter.\n"), []byte("Task.")); got != "No front matter.\n\nTask.\n" {
+		t.Errorf("%q", got)
+	}
+	if got := Prompt([]byte("---\nname: x\n---\nBody.\n"), []byte("Task.\n")); got != "Body.\n\nTask.\n" {
+		t.Errorf("%q", got)
+	}
+}
+
+func secretConfig(t *testing.T, dir, kubectlScript string) SecretConfig {
+	t.Helper()
+	return SecretConfig{Namespace: "twr-agents", Name: "twr-claude-token", Key: "token", Context: "my-cluster",
+		Kubectl: stub(t, dir, "kubectl", kubectlScript), WarnAfter: 330 * 24 * time.Hour,
+		Now: func() time.Time { return time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC) }}
+}
+
+// kubectlStub answers `create secret ... --dry-run=client -o json` with the
+// manifest kubectl would render, and records the rest.
+const kubectlStub = `case "$*" in
+  *--dry-run=client*) token=$(cat "$STUB_DIR/kubectl.stdin"); printf '{"apiVersion":"v1","kind":"Secret","metadata":{"name":"twr-claude-token","namespace":"twr-agents","creationTimestamp":null},"data":{"token":"%s"}}' "$(printf '%s' "$token" | base64 -w0)";;
+  *apply*) cp "$STUB_DIR/kubectl.stdin" "$STUB_DIR/applied.json"; cp "$STUB_DIR/kubectl.args" "$STUB_DIR/apply.args"; echo 'secret/twr-claude-token configured';;
+esac
+`
+
+func TestLoginFromSetupToken(t *testing.T) {
+	t.Setenv("STUB_DIR", t.TempDir())
+	dir := os.Getenv("STUB_DIR")
+	cfg := secretConfig(t, dir, kubectlStub)
+	cfg.Claude = stub(t, dir, "claude", "echo 'Open https://claude.ai/oauth/authorize?x in your browser' >&2\necho 'Your token: "+token+"'\n")
+	var stderr bytes.Buffer
+	if code := Login(t.Context(), cfg, false, strings.NewReader(""), &stderr); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if got := read(t, filepath.Join(dir, "claude.args")); strings.TrimSpace(got) != "setup-token" {
+		t.Errorf("claude args %q", got)
+	}
+	if strings.Contains(stderr.String(), token) {
+		t.Error("the token reached the terminal")
+	}
+	if !strings.Contains(stderr.String(), "Your token: <token>") || !strings.Contains(stderr.String(), "issued 2026-11-06") {
+		t.Errorf("stderr %q", stderr.String())
+	}
+	applied := read(t, filepath.Join(dir, "applied.json"))
+	var secret struct {
+		Metadata struct {
+			Name        string            `json:"name"`
+			Namespace   string            `json:"namespace"`
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+		Data map[string]string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(applied), &secret); err != nil {
+		t.Fatal(err)
+	}
+	if secret.Metadata.Name != "twr-claude-token" || secret.Metadata.Namespace != "twr-agents" || secret.Metadata.Annotations[IssuedAtAnnotation] != "2026-11-06T09:00:00Z" {
+		t.Errorf("metadata %+v", secret.Metadata)
+	}
+	if secret.Data["token"] == "" {
+		t.Errorf("data %v", secret.Data)
+	}
+	args := read(t, filepath.Join(dir, "apply.args"))
+	if !strings.HasPrefix(args, "--namespace\ntwr-agents\n--context\nmy-cluster\napply\n-f\n-\n") {
+		t.Errorf("apply args %q", args)
+	}
+	// The token never touched a file under the stub directory but kubectl's own
+	// recorded stdin, which stands in for the pipe.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.Name() == "kubectl.stdin" || e.Name() == "applied.json" || e.Name() == "claude" || e.IsDir() {
+			continue
+		}
+		if strings.Contains(read(t, filepath.Join(dir, e.Name())), token) {
+			t.Errorf("%s holds the token", e.Name())
+		}
+	}
+}
+
+func TestLoginFromStdin(t *testing.T) {
+	t.Setenv("STUB_DIR", t.TempDir())
+	dir := os.Getenv("STUB_DIR")
+	cfg := secretConfig(t, dir, kubectlStub)
+	cfg.Claude = filepath.Join(dir, "no-claude")
+	var stderr bytes.Buffer
+	if code := Login(t.Context(), cfg, true, strings.NewReader(token+"\n"), &stderr); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "applied.json")); err != nil { //nolint:gosec // the test's own temp dir
+		t.Error("nothing applied")
+	}
+}
+
+func TestLoginFailures(t *testing.T) {
+	t.Setenv("STUB_DIR", t.TempDir())
+	dir := os.Getenv("STUB_DIR")
+	t.Run("no token in the output", func(t *testing.T) {
+		cfg := secretConfig(t, dir, kubectlStub)
+		cfg.Claude = stub(t, dir, "claude", "echo 'nothing here'\n")
+		var stderr bytes.Buffer
+		if code := Login(t.Context(), cfg, false, strings.NewReader(""), &stderr); code != ExitFailed || !strings.Contains(stderr.String(), "--from-stdin") {
+			t.Errorf("exit %d: %s", code, stderr.String())
+		}
+	})
+	t.Run("setup-token fails", func(t *testing.T) {
+		cfg := secretConfig(t, dir, kubectlStub)
+		cfg.Claude = stub(t, dir, "claude", "exit 3\n")
+		if code := Login(t.Context(), cfg, false, strings.NewReader(""), &bytes.Buffer{}); code != ExitFailed {
+			t.Errorf("exit %d", code)
+		}
+	})
+	t.Run("an empty stdin", func(t *testing.T) {
+		cfg := secretConfig(t, dir, kubectlStub)
+		if code := Login(t.Context(), cfg, true, strings.NewReader("\n"), &bytes.Buffer{}); code != ExitFailed {
+			t.Errorf("exit %d", code)
+		}
+	})
+	t.Run("kubectl cannot render", func(t *testing.T) {
+		cfg := secretConfig(t, dir, "exit 1\n")
+		if code := Login(t.Context(), cfg, true, strings.NewReader(token), &bytes.Buffer{}); code != ExitFailed {
+			t.Errorf("exit %d", code)
+		}
+	})
+	t.Run("kubectl renders something else", func(t *testing.T) {
+		cfg := secretConfig(t, dir, "echo '[]'\n")
+		if code := Login(t.Context(), cfg, true, strings.NewReader(token), &bytes.Buffer{}); code != ExitFailed {
+			t.Errorf("exit %d", code)
+		}
+	})
+	t.Run("apply fails", func(t *testing.T) {
+		cfg := secretConfig(t, dir, strings.Replace(kubectlStub, "*apply*) cp", "*apply*) exit 1; cp", 1))
+		if code := Login(t.Context(), cfg, true, strings.NewReader(token), &bytes.Buffer{}); code != ExitFailed {
+			t.Errorf("exit %d", code)
+		}
+	})
+}
+
+func TestStatus(t *testing.T) {
+	t.Setenv("STUB_DIR", t.TempDir())
+	dir := os.Getenv("STUB_DIR")
+	secret := func(issued string) string {
+		return `echo '{"metadata":{"name":"twr-claude-token","creationTimestamp":"2026-01-01T00:00:00Z","annotations":{"` + IssuedAtAnnotation + `":"` + issued + `"}},"data":{"token":"c2VjcmV0"}}'` + "\n"
+	}
+	t.Run("fresh", func(t *testing.T) {
+		cfg := secretConfig(t, dir, secret("2026-10-01T00:00:00Z"))
+		var stdout bytes.Buffer
+		if code := Status(t.Context(), cfg, &stdout, &bytes.Buffer{}); code != ExitOK {
+			t.Errorf("exit %d", code)
+		}
+		if got := stdout.String(); !strings.Contains(got, "issued 2026-10-01, 36 days old") || strings.Contains(got, "c2VjcmV0") || strings.Contains(got, "secret") {
+			t.Errorf("stdout %q", got)
+		}
+		if got := read(t, filepath.Join(dir, "kubectl.args")); !strings.Contains(got, "get\nsecret\ntwr-claude-token\n-o\njson") {
+			t.Errorf("args %q", got)
+		}
+	})
+	t.Run("old", func(t *testing.T) {
+		cfg := secretConfig(t, dir, secret("2025-11-01T00:00:00Z"))
+		var stdout bytes.Buffer
+		if code := Status(t.Context(), cfg, &stdout, &bytes.Buffer{}); code != 4 || !strings.Contains(stdout.String(), "older than 330 days") {
+			t.Errorf("exit %d: %s", code, stdout.String())
+		}
+	})
+	t.Run("no annotation falls back to the creation time", func(t *testing.T) {
+		cfg := secretConfig(t, dir, `echo '{"metadata":{"creationTimestamp":"2026-11-01T00:00:00Z"},"data":{"token":"x"}}'`+"\n")
+		var stdout bytes.Buffer
+		if code := Status(t.Context(), cfg, &stdout, &bytes.Buffer{}); code != ExitOK || !strings.Contains(stdout.String(), "created 2026-11-01, 5 days old") {
+			t.Errorf("exit %d: %s", code, stdout.String())
+		}
+	})
+	t.Run("missing", func(t *testing.T) {
+		cfg := secretConfig(t, dir, "echo 'Error from server (NotFound)' >&2\nexit 1\n")
+		if code := Status(t.Context(), cfg, &bytes.Buffer{}, &bytes.Buffer{}); code != ExitFailed {
+			t.Errorf("exit %d", code)
+		}
+	})
+	t.Run("the wrong key", func(t *testing.T) {
+		cfg := secretConfig(t, dir, `echo '{"metadata":{},"data":{"other":"x"}}'`+"\n")
+		if code := Status(t.Context(), cfg, &bytes.Buffer{}, &bytes.Buffer{}); code != ExitFailed {
+			t.Errorf("exit %d", code)
+		}
+	})
+	t.Run("not JSON", func(t *testing.T) {
+		cfg := secretConfig(t, dir, "echo nope\n")
+		if code := Status(t.Context(), cfg, &bytes.Buffer{}, &bytes.Buffer{}); code != ExitFailed {
+			t.Errorf("exit %d", code)
+		}
+	})
+}
+
+func TestSecretConfigFromEnv(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	cfg, err := SecretConfigFromEnv(env(map[string]string{"TWR_CLAUDE_WARN_AFTER": "720h", "TWR_CLAUDE_KUBE_CONTEXT": "my-cluster"}))
+	if err != nil || cfg.Namespace != "twr-agents" || cfg.Name != "twr-claude-token" || cfg.Key != "token" || cfg.WarnAfter != 720*time.Hour || cfg.Context != "my-cluster" {
+		t.Errorf("%+v %v", cfg, err)
+	}
+	if _, err := SecretConfigFromEnv(env(map[string]string{"TWR_CLAUDE_WARN_AFTER": "never"})); err == nil {
+		t.Error("no error")
+	}
+}
