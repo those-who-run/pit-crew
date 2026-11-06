@@ -1,0 +1,50 @@
+{
+  "description": "How closely a pull request is read, from the paths it changes. lanes.py is the reference classifier. A change is `sensitive` when any path matches a sensitive pattern; `light` when every path matches a docs pattern, or a tests pattern as an added file; `standard` otherwise. Patterns are matched against the path from the repository's root: `*` stays inside one directory, `**` crosses directories, and a leading `**/` also matches at the root.",
+  "sensitive": [
+    ".github/**",
+    ".claude/**",
+    "**/AGENTS.md",
+    "**/CLAUDE.md",
+    "**/CODEOWNERS",
+    "docs/adr/**",
+    "proto/**",
+    "subjects.yaml",
+    "buf.yaml",
+    "buf.gen.yaml",
+    "deploy/**",
+    "**/Dockerfile",
+    "**/Dockerfile.*",
+    "**/go.mod",
+    "**/pyproject.toml",
+    "**/package.json",
+    "**/migrations/**",
+    "**/migrate*.go",
+    "renovate.json",
+    "release-please-config.json",
+    ".pre-commit-config.yaml",
+    ".gitleaksignore"
+  ],
+  "docs": [
+    "**/*.md",
+    "docs/**",
+    "LICENSE",
+    "NOTICE",
+    "licenses/**"
+  ],
+  "tests": [
+    "**/*_test.go",
+    "**/testdata/**",
+    "**/tests/**",
+    "**/test_*.py",
+    "**/*.test.ts",
+    "**/*.test.tsx"
+  ],
+  "repositories": {
+    "those-who-run/.github": {
+      "sensitive": ["**"]
+    },
+    "those-who-run/chassis": {
+      "sensitive": ["**/*.jinja", "copier.yml"]
+    }
+  }
+}
