@@ -52,8 +52,12 @@ Three rules hold throughout, and the code enforces what it can:
 | [`internal/github`](internal/github/client.go) | The REST calls the steps need, with retries while a pod's network comes up and on rate limits |
 | [`internal/kube`](internal/kube/kube.go) | Create and list Jobs, read a container's exit code, as the pod's service account |
 | [`internal/poller`](internal/poller/poll.go) | One poll: read, decide, start at most one Job within the limits, heartbeat; and the ready pass |
-| `cmd/pit-crew` | `poll`, `fetch`, `publish-review`, `publish-build`, `ready`, `lane` |
-| `cmd/twr-claude` | `login`, `status` (the maintainer, on his own machine) and `run` (the agent step) |
+| [`internal/fetch`](internal/fetch/fetch.go) | The step before the model: the checkout at the recorded head, the data files, the lane, the base branch's steering files in place of the pull request's |
+| [`internal/review`](internal/review/review.go) | The review poster: check, then create or update the one comment for the head and set `review / verdict`, or hold |
+| [`internal/build`](internal/build/build.go) | The build publisher: check the commits from a repository of its own (never running git in the model's), then push and open the pull request, or post the answer |
+| [`internal/claude`](internal/claude/run.go) | `twr-claude`: run with the subscription token alone; login and status against the cluster's Secret |
+| [`cmd/pit-crew`](cmd/pit-crew/main.go) | `poll`, `ready`, `fetch`, `publish-review`, `publish-build`, `lane` |
+| [`cmd/twr-claude`](cmd/twr-claude/main.go) | `run` (the agent step), `login` and `status` (the maintainer, on his own machine) |
 
 [`docs/jobs.md`](docs/jobs.md) is the contract the Kubernetes manifests are written
 from: each step's command line, environment, mounts, Secrets, exit codes, the Job

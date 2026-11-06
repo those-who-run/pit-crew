@@ -46,7 +46,9 @@ containers:
 
 Both run with a read-only root file system; each container needs an emptyDir at
 `/tmp`, and the agent one at `/home/agent` too. Pin both by digest in the
-manifests.
+manifests. Neither image has been built yet: the runner image installs several
+toolchains, and the night's load rules allowed no container builds. CI's
+`image / build` and `runner / build` are the first builds.
 
 ## Volumes
 
@@ -108,6 +110,20 @@ Every `pit-crew` step reads these.
 
 With nothing set, nothing qualifies: an empty allowlist reviews nobody and builds
 nothing.
+
+Each step mints its token with only the permissions it uses, which the App must
+have been granted:
+
+| Step | App | Permissions asked for |
+|---|---|---|
+| `poll` | reviewer | metadata, contents, pull requests, issues: read |
+| `ready` | reviewer | metadata, contents, pull requests: read; statuses: write |
+| `fetch` | reviewer | metadata, contents, pull requests, issues: read |
+| `publish-review` | reviewer | metadata: read; pull requests, statuses: write |
+| `publish-build` | builder | metadata: read; contents, pull requests: write |
+
+A token for `poll` and `ready` covers every repository of the installation; the
+others are scoped to the repositories the step touches.
 
 ## The poller: `pit-crew poll`
 
@@ -223,6 +239,8 @@ files, works out the lane, and prepares the working tree.
 | `FETCH_AGENT_REF` | The release tag of `.github` to read briefs and skills from (required) |
 | `FETCH_DIR` | `/work` |
 | `FETCH_BUILDER_NAME`, `FETCH_BUILDER_EMAIL` | The git identity set in the checkout for a build or fix |
+| `FETCH_BASE_REF` | The base branch for a build, `main` by default |
+| `FETCH_GIT_BASE` | What clone URLs start with, `https://github.com/` by default; the tests point it at local repositories |
 
 The App token is used for the clone through git's environment, never written to
 `.git/config`; a test proves the checkout holds no token.
@@ -325,6 +343,8 @@ head, ending in the marker with the verdict; `review / verdict` is set; exit 0.
 | `PUBLISH_NUMBER`, `PUBLISH_HEAD_SHA`, `PUBLISH_ROUND` | (fix) | The pull request, the head the review was of, the round |
 | `PUBLISH_BUILDER_NAME`, `PUBLISH_BUILDER_EMAIL` | (required) | The identity every commit must carry |
 | `PUBLISH_PROTECTED` | `.claude/**,**/CODEOWNERS` | Paths a build may not touch |
+| `PUBLISH_BASE_REF` | `main` | The base branch the pull request targets and the push is checked against |
+| `PUBLISH_GIT_BASE` | `https://github.com/` | What the push URL starts with |
 | `PUBLISH_DIR`, `PUBLISH_HOLD_DIR`, `PUBLISH_ALLOW_FILE`, `PUBLISH_PATTERNS_FILE` | as above | |
 
 It never runs git inside `/work/repo`: that repository's configuration and hooks
@@ -342,8 +362,15 @@ No model, reviewer App. For every open pull request in the ladder: sets
 `ladder / ready` to `success` when the verdict at the head is ready or nits and
 every required check is green, to `pending` otherwise where it was set before;
 sets `ladder / stuck` to `failure` when the fix rounds are used up. Writes the
-ready list to `READY_LIST_FILE` (Markdown) when set. Only writes a status that
-differs from the one there. Runs on its own schedule, or after `poll`.
+ready list to `READY_LIST_FILE` (Markdown) when set; the file's volume is the
+lab's (the plan puts the list in the vault). Only writes a status that differs
+from the one there. Runs on its own schedule, or after `poll`.
+
+### `pit-crew lane`
+
+Not a step: the port of `python3 agent/lanes.py --repo owner/name`, for checking
+the classifier by hand. Reads `git diff --name-status` on standard input and
+prints the lane; `--config` names the `lanes.json` to use.
 
 ## Egress, by host
 

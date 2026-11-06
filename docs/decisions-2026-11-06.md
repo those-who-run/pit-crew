@@ -139,7 +139,9 @@ is open to reversal.
     that holds the builder's token. The publisher makes a repository of its own,
     reads the model's objects through `GIT_ALTERNATE_OBJECT_DIRECTORIES`, reads
     the branch's head from its ref file, and does every check and the push from
-    there. (Implemented as far as the night went; see the report.)
+    there. A test plants a `pre-push` hook, a `url.insteadOf` redirect and an
+    alias in the model's `.git` and shows that none of them runs and the push
+    reaches the origin.
 29. **The fix publisher appends the fix marker itself** and refuses an answer that
     carries one, as the review poster refuses a comment with a second marker.
 
@@ -163,6 +165,21 @@ is open to reversal.
 34. **Exit codes 70 and 75 are read from the result text and the exit status**,
     since the documentation does not give codes for an expired login or the usage
     limit; the strings matched are the documented error messages.
+
+## The images
+
+35. **Claude Code is installed from npm at a pinned version**, not with the native
+    installer: `npm install -g @anthropic-ai/claude-code@<version>` is one line
+    with npm's own integrity check against the registry's record, and the
+    version is an `ARG` beside the other tools'. Alternative: the native
+    installer with its signed `manifest.json`; it would need GPG in the build.
+36. **Every tool in the runner is downloaded by version and checked against its
+    published SHA-256**, in `ARG` pairs at the top of `Dockerfile.runner`;
+    Debian's packages come at the base image's digest. Renovate bumps the base
+    images; the tool versions are bumped by hand with their checksums.
+37. **The runner's base is Node's Debian image** (Node for Claude Code), on the
+    same Debian release as the small image, which is Debian's slim image with git
+    added.
 
 ## Not done, and why
 
