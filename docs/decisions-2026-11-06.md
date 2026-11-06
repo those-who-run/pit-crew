@@ -183,8 +183,11 @@ is open to reversal.
 
 ## Not done, and why
 
-- The runner image was not built: the brief and the load rules say no container
-  builds unless small, and this one installs several toolchains.
+- The small image was built once with podman and passed the smoke test image.yml
+  runs (`-version` for both binaries, git present, user 65532); it is 197 MB. The
+  runner image was not built: the load rules allowed no container build that is
+  not small, and this one installs several toolchains. Its first build is CI's
+  `runner / build`, and a wrong checksum or URL will show there.
 - Nothing was run against a cluster, a GitHub App or a real Claude session;
   `docs/jobs.md` lists what the first real run must prove.
 - The report that goes with this file says exactly which numbered pieces of the

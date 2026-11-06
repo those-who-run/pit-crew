@@ -46,9 +46,10 @@ containers:
 
 Both run with a read-only root file system; each container needs an emptyDir at
 `/tmp`, and the agent one at `/home/agent` too. Pin both by digest in the
-manifests. Neither image has been built yet: the runner image installs several
-toolchains, and the night's load rules allowed no container builds. CI's
-`image / build` and `runner / build` are the first builds.
+manifests. The small image was built once and passed its smoke test; the runner
+image has not been built: it installs several toolchains, and the night's load
+rules allowed no container build that is not small. CI's `runner / build` is its
+first build.
 
 ## Volumes
 

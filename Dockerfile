@@ -26,8 +26,8 @@ FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d054
 # git for the clone and the push, CA certificates for GitHub. The package lists are
 # removed so the image carries no apt state; versions are Debian's at the base
 # image's digest.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates \
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --gid 65532 nonroot \
  && useradd --uid 65532 --gid 65532 --create-home --home-dir /home/nonroot --shell /usr/sbin/nologin nonroot
