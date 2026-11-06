@@ -123,6 +123,7 @@ type GitHub interface {
 	ListComments(ctx context.Context, repo string, number int) ([]github.Comment, error)
 	CreateComment(ctx context.Context, repo string, number int, body string) (int64, error)
 	CreatePull(ctx context.Context, repo, title, body, head, base string) (int, string, error)
+	UpdatePullBody(ctx context.Context, repo string, number int, body string) error
 }
 
 // Run does the step and returns its exit code.
@@ -163,6 +164,7 @@ func run(ctx context.Context, cfg Config, gh GitHub, logger *slog.Logger) (int, 
 		*into = string(data)
 	}
 	var pr github.PullRequest
+	rewrote := false
 	if cfg.Mode == publish.ModeFix {
 		if pr, err = gh.GetPull(ctx, cfg.Repo, cfg.Number); err != nil {
 			return steps.ExitFailed, err
@@ -172,9 +174,11 @@ func run(ctx context.Context, cfg Config, gh GitHub, logger *slog.Logger) (int, 
 			return steps.ExitHeadMoved, nil
 		}
 		// The pull request's own title and body stand unless the builder rewrote
-		// the body.
+		// the body (the evidence table changed); a rewritten body is checked like a
+		// new one and applied after the push.
 		facts.Title = pr.Title
-		if strings.TrimSpace(facts.Body) == "" {
+		rewrote = strings.TrimSpace(facts.Body) != ""
+		if !rewrote {
 			facts.Body = pr.Body
 		}
 		comments, err := gh.ListComments(ctx, cfg.Repo, cfg.Number)
@@ -210,6 +214,11 @@ func run(ctx context.Context, cfg Config, gh GitHub, logger *slog.Logger) (int, 
 		}
 		logger.InfoContext(ctx, "opened", "repo", cfg.Repo, "number", number, "url", url, "branch", task.Branch, "commits", len(facts.Commits))
 	case publish.ModeFix:
+		if rewrote {
+			if err := gh.UpdatePullBody(ctx, cfg.Repo, cfg.Number, facts.Body); err != nil {
+				return steps.ExitFailed, err
+			}
+		}
 		if _, err := gh.CreateComment(ctx, cfg.Repo, cfg.Number, publish.AnswerBody(facts.Answer, cfg.Round)); err != nil {
 			return steps.ExitFailed, err
 		}

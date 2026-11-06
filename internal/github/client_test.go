@@ -347,6 +347,7 @@ func TestWrites(t *testing.T) {
 	f.json("PATCH", "/repos/those-who-run/ecu/issues/comments/42", `{"id": 42}`)
 	f.json("POST", "/repos/those-who-run/ecu/statuses/1f0c", `{"id": 1}`)
 	f.json("POST", "/repos/those-who-run/ecu/pulls", `{"number": 32, "html_url": "https://github.com/those-who-run/ecu/pull/32"}`)
+	f.json("PATCH", "/repos/those-who-run/ecu/pulls/32", `{"number": 32}`)
 	id, err := c.CreateComment(t.Context(), "those-who-run/ecu", 31, "Review at head")
 	if err != nil || id != 42 {
 		t.Fatalf("%d, %v", id, err)
@@ -361,6 +362,12 @@ func TestWrites(t *testing.T) {
 	number, url, err := c.CreatePull(t.Context(), "those-who-run/ecu", "feat: x", "body", "agent/232-x", "main")
 	if err != nil || number != 32 || url == "" {
 		t.Fatalf("%d %q %v", number, url, err)
+	}
+	if err := c.UpdatePullBody(t.Context(), "those-who-run/ecu", 32, "new body"); err != nil {
+		t.Fatal(err)
+	}
+	if f.bodies[4] != `{"body":"new body"}` {
+		t.Errorf("update body %q", f.bodies[4])
 	}
 	var status map[string]string
 	if err := json.Unmarshal([]byte(f.bodies[2]), &status); err != nil {

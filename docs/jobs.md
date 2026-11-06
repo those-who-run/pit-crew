@@ -315,6 +315,16 @@ invalid; 75 the plan's usage limit reached; 71 the turn limit; 72 the time limit
 See the [wrapper's page](twr-claude.md) for what was checked against the CLI and
 what was not.
 
+## What the agent writes to `/work/out`
+
+| Kind | Files |
+|---|---|
+| review | `verdict.json` (always), `comment.md` (kind A always; B to D when something is wrong), `private.md` (only when needed), as the reviewer's brief defines them |
+| build | `pr-title.txt` (one line, a Conventional Commit), `pr-body.md` (the template as `twr-pr-ready` writes it, ending with the issue line); the commits are on the branch in `/work/repo` |
+| fix | `answer.md` (as `twr-fix-review` writes it, without a marker); `pr-body.md` only when the evidence table changed; the commits on the branch |
+
+`twr-claude run` adds `agent.json`, its own summary of the run.
+
 ## The publish steps
 
 ### `pit-crew publish-review`
@@ -352,8 +362,9 @@ It never runs git inside `/work/repo`: that repository's configuration and hooks
 are the model's to write. It makes a repository of its own under `/tmp`, reads the
 agent's objects through `GIT_ALTERNATE_OBJECT_DIRECTORIES`, reads the branch's
 head from the ref file, and does every check there. On pass it pushes the branch
-(never with force), then opens the pull request (build) or posts the answer with
-its fix marker (fix). On refusal: the reasons and the agent's files go to the hold
+(never with force), then opens the pull request (build) or, for a fix, replaces
+the body when the builder rewrote it and posts the answer with its fix marker. A
+fix whose pull request head moved since the fetch exits 11 and posts nothing. On refusal: the reasons and the agent's files go to the hold
 directory, exit 10. A refused build leaves nothing on GitHub, so the Job's TTL is
 its retry interval; the maintainer removes `agent-ready` to stop it.
 

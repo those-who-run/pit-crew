@@ -70,6 +70,12 @@ type gh struct {
 	pull    github.PullRequest
 	pulls   []string
 	answers []string
+	bodies  []string
+}
+
+func (g *gh) UpdatePullBody(_ context.Context, _ string, _ int, body string) error {
+	g.bodies = append(g.bodies, body)
+	return nil
 }
 
 func (g *gh) GetPull(context.Context, string, int) (github.PullRequest, error)    { return g.pull, nil }
@@ -264,6 +270,25 @@ func TestFixPushesAndAnswers(t *testing.T) {
 	}
 	if len(f.gh.answers) != 1 || !strings.HasSuffix(f.gh.answers[0], "\n\n<!-- twr-fix round=1 -->\n") || len(f.gh.pulls) != 0 {
 		t.Errorf("answers %q, pulls %q", f.gh.answers, f.gh.pulls)
+	}
+}
+
+func TestFixWithARewrittenBody(t *testing.T) {
+	f := newFixture(t, publish.ModeFix)
+	head := f.commit(t, builder, "fix(race): laps", map[string]string{"race/fuel.go": "package race\n\nfunc Fuel() bool { return true }\n"})
+	write(t, f.work, "out/answer.md", "Answer to the review at `"+f.cfg.HeadSHA[:8]+"`:\n\n1. Fixed in `"+head[:8]+"`.\n")
+	write(t, f.work, "out/pr-body.md", strings.Replace(body, "| AC1 | unit |", "| AC1 | recording |", 1))
+	if code := Run(t.Context(), f.cfg, f.gh, logger()); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if len(f.gh.bodies) != 1 || !strings.Contains(f.gh.bodies[0], "| AC1 | recording |") || len(f.gh.answers) != 1 {
+		t.Errorf("bodies %q, answers %d", f.gh.bodies, len(f.gh.answers))
+	}
+	// A rewritten body off the template is held like a new one.
+	write(t, f.work, "out/pr-body.md", "Done.\n")
+	f.gh.bodies = nil
+	if code := Run(t.Context(), f.cfg, f.gh, logger()); code != 10 || len(f.gh.bodies) != 0 {
+		t.Errorf("exit %d, bodies %q", code, f.gh.bodies)
 	}
 }
 

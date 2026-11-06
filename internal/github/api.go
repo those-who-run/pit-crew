@@ -399,6 +399,15 @@ func (c *Client) CreatePull(ctx context.Context, repo, title, body, head, base s
 	return created.Number, created.HTMLURL, nil
 }
 
+// UpdatePullBody replaces a pull request's body.
+func (c *Client) UpdatePullBody(ctx context.Context, repo string, number int, body string) error {
+	path, err := repoPath(repo)
+	if err != nil {
+		return err
+	}
+	return c.patch(ctx, fmt.Sprintf("%s/pulls/%d", path, number), map[string]string{"body": body})
+}
+
 // Comparison is how head stands against base.
 type Comparison struct {
 	// Status is identical, ahead, behind or diverged.
