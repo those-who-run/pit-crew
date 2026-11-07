@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/those-who-run/pit-crew/compare/v0.1.1...v0.1.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **twr-claude:** say why a run failed ([#5](https://github.com/those-who-run/pit-crew/issues/5)) ([30367b7](https://github.com/those-who-run/pit-crew/commit/30367b7d2ddcff260ca13a329a7f83f524bd14fb))
+
 ## [0.1.1](https://github.com/those-who-run/pit-crew/compare/v0.1.0...v0.1.1) (2026-11-07)
 
 
