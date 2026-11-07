@@ -465,8 +465,13 @@ time:
 `activeDeadlineSeconds: 2400` on the Job (the agent's own limit is 25 minutes),
 `backoffLimit: 0` (a failed unit is not retried by Kubernetes; the TTL and the
 poller decide), `ttlSecondsAfterFinished: 172800`. emptyDir `sizeLimit`: 2Gi for
-`/work/repo` (a Go module cache lands there under `make check`), 256Mi for the
-rest.
+`/work/repo`, 4Gi for `/home/agent`, 1Gi for `/tmp`, 256Mi for the rest. The
+runner image sets no `GOPATH`, `GOCACHE` or `XDG_CACHE_HOME`, so the Go module
+and build caches, golangci-lint's cache and pre-commit's environments land under
+`$HOME` when the agent runs the tests or `make check`, and `go test` links its
+binaries under `/tmp`. At 256Mi for `$HOME`, a review on the maintainer's
+cluster was evicted (`Usage of EmptyDir volume "home" exceeds the limit`). The
+emptyDirs are on the node's disk, not in memory.
 
 ## What the first real run must prove
 
