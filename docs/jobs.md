@@ -384,6 +384,16 @@ the comment is created, or updated when the reviewer already commented on this
 head, ending in the marker with the verdict; `review / verdict` is set; exit 0.
 `private.md`, when present, always goes to the hold directory and never to GitHub.
 
+A held review stays held: the `held` status is a review record at that head, so
+the poller's decision for the pull request is `verdict-held` and no review Job
+starts again until the head moves. That is deliberate for a hold on a private
+value or a mention, which a second run would repeat. It also holds after an
+operational failure (the first Job on the maintainer's cluster held with
+`verdict-missing` because the wrapper had not granted the Write tool), where a
+second run is what is wanted. A way for the maintainer to ask for one without a
+push, a label applied by the maintainer's login newer than the held status, is
+planned; until then a held pull request is reviewed again only at its next head.
+
 ### `pit-crew publish-build`
 
 | Variable | Default | Meaning |
