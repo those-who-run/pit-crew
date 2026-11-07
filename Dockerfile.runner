@@ -68,6 +68,13 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 
 COPY --from=build /out/twr-claude /usr/local/bin/twr-claude
 
+# git's global configuration, the same file as the small image's: the /work
+# mount points are owned by root and would be refused as "dubious ownership"
+# by git as the agent user otherwise. The home is an emptyDir, so a ~/.gitconfig
+# would not survive, and GIT_CONFIG_GLOBAL points git here instead.
+RUN mkdir -p /etc/pit-crew \
+ && printf '[safe]\n\tdirectory = /work/repo\n\tdirectory = /work/agent\n' > /etc/pit-crew/gitconfig
+
 # The agent user: the same number as the small image's nonroot. The home is an
 # emptyDir the manifest mounts, so the CLI's state never outlives the Job.
 RUN groupadd --gid 65532 agent \
@@ -78,6 +85,7 @@ ENV HOME=/home/agent \
     GOTOOLCHAIN=local \
     GOFLAGS=-mod=mod \
     GIT_CONFIG_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL=/etc/pit-crew/gitconfig \
     DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 WORKDIR /work/repo

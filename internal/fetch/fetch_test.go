@@ -2,11 +2,13 @@ package fetch
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -151,6 +153,37 @@ func noToken(t *testing.T, dir string) {
 		}
 		return nil
 	})
+}
+
+// The step's git reads its configuration from the environment: the token's header
+// and, so a clone into a root-owned mount point is not refused as dubious, the
+// repository and agent directories as safe. git reports the entries it took with
+// their origin, so a count that does not match the pairs shows here.
+func TestGitConfigFromTheEnvironment(t *testing.T) {
+	o := newOrigin(t)
+	cfg, dir := config(t, o, KindReview)
+	fromEnv := func(cfg Config) []string {
+		out, err := cfg.git(t.Context(), dir, "config", "--show-origin", "--list")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if entry, ok := strings.CutPrefix(line, "command line:\t"); ok {
+				got = append(got, entry)
+			}
+		}
+		return got
+	}
+	safe := []string{"safe.directory=" + filepath.Join(dir, "repo"), "safe.directory=" + filepath.Join(dir, "agent")}
+	header := "http." + o.base + ".extraheader=Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
+	if got, want := fromEnv(cfg), append(safe, header); !reflect.DeepEqual(got, want) {
+		t.Errorf("git took %q\nwant %q", got, want)
+	}
+	cfg.Token = ""
+	if got := fromEnv(cfg); !reflect.DeepEqual(got, safe) {
+		t.Errorf("without a token, git took %q\nwant %q", got, safe)
+	}
 }
 
 func TestReview(t *testing.T) {

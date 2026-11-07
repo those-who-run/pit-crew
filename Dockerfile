@@ -31,10 +31,19 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --gid 65532 nonroot \
  && useradd --uid 65532 --gid 65532 --create-home --home-dir /home/nonroot --shell /usr/sbin/nologin nonroot
+# git's global configuration, in place of a home's: /work/repo and /work/agent are
+# emptyDir mount points owned by root, and a clone into an existing directory
+# keeps it as the repository root, so git as nonroot refuses them as "dubious
+# ownership" unless they are safe. GIT_CONFIG_GLOBAL below points git here.
+RUN mkdir -p /etc/pit-crew \
+ && printf '[safe]\n\tdirectory = /work/repo\n\tdirectory = /work/agent\n' > /etc/pit-crew/gitconfig
 COPY --from=build /out/pit-crew /pit-crew
 COPY --from=build /out/twr-claude /twr-claude
 # The same numeric user as distroless's nonroot, so a runtime can check it isn't
 # root. HOME is writable only when the manifest mounts it; git needs no home.
+# GIT_CONFIG_NOSYSTEM keeps git from reading /etc/gitconfig, so the image's
+# package configuration never reaches a step; GIT_CONFIG_GLOBAL is independent of
+# it, and names the one file git reads.
 USER 65532:65532
-ENV HOME=/home/nonroot GIT_CONFIG_NOSYSTEM=1
+ENV HOME=/home/nonroot GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/etc/pit-crew/gitconfig
 ENTRYPOINT ["/pit-crew"]

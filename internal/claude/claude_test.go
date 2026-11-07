@@ -58,6 +58,7 @@ func runConfig(t *testing.T, dir, script string) RunConfig {
 		Timeout:   time.Minute,
 		Bin:       stub(t, dir, "claude", script),
 		Out:       out,
+		EnvScrub:  true,
 	}
 }
 
@@ -98,12 +99,38 @@ func TestRunStartsClaudeWithTheTokenAlone(t *testing.T) {
 	if strings.Contains(stderr.String(), token) {
 		t.Error("the token was printed")
 	}
+	if strings.Contains(stderr.String(), "env scrub is off") {
+		t.Errorf("warned with the scrub on: %s", stderr.String())
+	}
 	var result Result
 	if err := json.Unmarshal([]byte(read(t, filepath.Join(dir, "out", "agent.json"))), &result); err != nil {
 		t.Fatal(err)
 	}
 	if result.Outcome != "ok" || result.NumTurns != 12 || result.CostUSD != 0.42 || result.DurationMS != 4200 || result.Exit != 0 {
 		t.Errorf("agent.json %+v", result)
+	}
+}
+
+// With the scrub off, claude is told so explicitly (never left to its own
+// default) and the step says once, on standard error, what that gives up.
+func TestRunWithTheEnvScrubOff(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runConfig(t, dir, "echo '"+okResult+"'\n")
+	cfg.EnvScrub = false
+	var stderr bytes.Buffer
+	if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1"}, &stderr); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	env := read(t, filepath.Join(dir, "claude.env"))
+	if !strings.Contains(env, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0\n") || strings.Contains(env, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1\n") {
+		t.Errorf("the environment does not turn the scrub off:\n%s", env)
+	}
+	want := "twr-claude: subprocess env scrub is off (TWR_CLAUDE_ENV_SCRUB=0): commands the model runs can read its environment, including the token\n"
+	if !strings.Contains(stderr.String(), want) {
+		t.Errorf("stderr %q lacks the warning", stderr.String())
+	}
+	if strings.Contains(stderr.String(), token) {
+		t.Error("the token was printed")
 	}
 }
 
@@ -195,16 +222,31 @@ func TestRunConfigErrors(t *testing.T) {
 func TestRunConfigFromEnv(t *testing.T) {
 	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 	cfg, err := RunConfigFromEnv(env(map[string]string{"TWR_CLAUDE_BRIEF": "agent/agents/twr-reviewer.md", "TWR_CLAUDE_MAX_TURNS": "40", "TWR_CLAUDE_TIMEOUT": "10m", "TWR_CLAUDE_ADD_DIRS": "/a, /b,"}))
-	if err != nil || cfg.MaxTurns != 40 || cfg.Timeout != 10*time.Minute || !reflect.DeepEqual(cfg.AddDirs, []string{"/a", "/b"}) || cfg.Tools == "" || cfg.TokenFile == "" {
+	if err != nil || cfg.MaxTurns != 40 || cfg.Timeout != 10*time.Minute || !reflect.DeepEqual(cfg.AddDirs, []string{"/a", "/b"}) || cfg.Tools == "" || cfg.TokenFile == "" || !cfg.EnvScrub {
 		t.Errorf("%+v %v", cfg, err)
+	}
+	for _, v := range []string{"1", "true", "yes"} {
+		if cfg, err := RunConfigFromEnv(env(map[string]string{"TWR_CLAUDE_BRIEF": "x", "TWR_CLAUDE_ENV_SCRUB": v})); err != nil || !cfg.EnvScrub {
+			t.Errorf("TWR_CLAUDE_ENV_SCRUB=%s: scrub %v, %v", v, cfg.EnvScrub, err)
+		}
+	}
+	for _, v := range []string{"0", "false", "no"} {
+		if cfg, err := RunConfigFromEnv(env(map[string]string{"TWR_CLAUDE_BRIEF": "x", "TWR_CLAUDE_ENV_SCRUB": v})); err != nil || cfg.EnvScrub {
+			t.Errorf("TWR_CLAUDE_ENV_SCRUB=%s: scrub %v, %v", v, cfg.EnvScrub, err)
+		}
 	}
 	for _, bad := range []map[string]string{
 		{},
 		{"TWR_CLAUDE_BRIEF": "x", "TWR_CLAUDE_MAX_TURNS": "0"},
 		{"TWR_CLAUDE_BRIEF": "x", "TWR_CLAUDE_TIMEOUT": "soon"},
+		{"TWR_CLAUDE_BRIEF": "x", "TWR_CLAUDE_ENV_SCRUB": "off"},
 	} {
-		if _, err := RunConfigFromEnv(env(bad)); err == nil {
+		_, err := RunConfigFromEnv(env(bad))
+		if err == nil {
 			t.Errorf("%v: no error", bad)
+		}
+		if v, ok := bad["TWR_CLAUDE_ENV_SCRUB"]; ok && err != nil && !strings.Contains(err.Error(), "TWR_CLAUDE_ENV_SCRUB: \""+v+"\"") {
+			t.Errorf("%v: %v does not name the variable and the value", bad, err)
 		}
 	}
 }
