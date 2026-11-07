@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1](https://github.com/those-who-run/pit-crew/compare/v0.1.0...v0.1.1) (2026-11-07)
+
+
+### Features
+
+* **twr-claude:** the env scrub as a switch, git safe.directory in the images, LOG_FORMAT ([#3](https://github.com/those-who-run/pit-crew/issues/3)) ([24a6650](https://github.com/those-who-run/pit-crew/commit/24a6650cf05cc5b94a061058d3677d855e20215c))
+
+
+### Bug Fixes
+
+* **twr-claude:** show setup-token's sign-in prompt on a headless host ([#2](https://github.com/those-who-run/pit-crew/issues/2)) ([618a73d](https://github.com/those-who-run/pit-crew/commit/618a73d330080f3b6f659a046db7dfc5eef976be))
+
 ## 0.1.0 (2026-11-07)
 
 
