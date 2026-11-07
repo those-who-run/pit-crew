@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -307,10 +308,14 @@ func run(ctx context.Context, cfg Config, src Source, logger *slog.Logger) (int,
 			task.IssueRepo, task.Issue = issues[0].Repo, issues[0].Number
 		}
 		if cfg.Kind == KindReview {
-			if err := cfg.overlay(ctx, repoDir, task.BaseSHA, pr.HeadSHA, filepath.Join(data, "pr-files")); err != nil {
+			swapped, err := cfg.overlay(ctx, repoDir, task.BaseSHA, pr.HeadSHA, filepath.Join(data, "pr-files"))
+			if err != nil {
 				return ExitFailed, err
 			}
-			statement = reviewStatement(task, cfg.Dir)
+			if err := writeFile(filepath.Join(data, "swapped.md"), []byte(swappedNote(swapped, cfg.Dir))); err != nil {
+				return ExitFailed, err
+			}
+			statement = reviewStatement(task, cfg.Dir, len(swapped) > 0)
 		} else {
 			statement = fixStatement(task, cfg.Dir, comments)
 		}
@@ -357,54 +362,118 @@ func IsSteering(p string) bool {
 	return false
 }
 
+// swap is one steering path the overlay changed in the working tree.
+type swap struct {
+	path string
+	// what says how the working tree differs from the pull request's head: the
+	// base's version replaces the pull request's, the base's is added (the pull
+	// request deleted it), or the pull request's is removed (the base has none).
+	what string
+}
+
 // overlay puts the base branch's steering files in the working tree in place of
 // the pull request's, which go under prFiles as data, so a pull request cannot
-// steer its own reviewer.
-func (c Config) overlay(ctx context.Context, repoDir, baseSHA, headSHA, prFiles string) error {
-	headPaths, err := c.steeringPaths(ctx, repoDir, headSHA)
+// steer its own reviewer. It returns what it changed: a steering file the pull
+// request leaves as the base has it is not a swap.
+func (c Config) overlay(ctx context.Context, repoDir, baseSHA, headSHA, prFiles string) ([]swap, error) {
+	head, err := c.steeringBlobs(ctx, repoDir, headSHA)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	basePaths, err := c.steeringPaths(ctx, repoDir, baseSHA)
+	base, err := c.steeringBlobs(ctx, repoDir, baseSHA)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for _, p := range headPaths {
+	var swaps []swap
+	var basePaths []string
+	for _, p := range sortedKeys(head) {
+		if base[p] == head[p] {
+			continue
+		}
 		content, err := c.git(ctx, repoDir, "show", headSHA+":"+p)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		target := filepath.Join(prFiles, filepath.FromSlash(p))
 		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
-			return err
+			return nil, err
 		}
 		if err := writeFile(target, content); err != nil {
-			return err
+			return nil, err
 		}
 		if err := os.RemoveAll(filepath.Join(repoDir, filepath.FromSlash(p))); err != nil {
-			return err
+			return nil, err
+		}
+		if _, ok := base[p]; ok {
+			swaps = append(swaps, swap{path: p, what: "the base's version replaces the pull request's"})
+		} else {
+			swaps = append(swaps, swap{path: p, what: "the pull request's is removed; the base has none"})
+		}
+	}
+	for _, p := range sortedKeys(base) {
+		if _, ok := head[p]; !ok {
+			swaps = append(swaps, swap{path: p, what: "the base's is added; the pull request deleted it"})
+		}
+		if base[p] != head[p] {
+			basePaths = append(basePaths, p)
 		}
 	}
 	if len(basePaths) > 0 {
 		if _, err := c.git(ctx, repoDir, append([]string{"checkout", "--quiet", baseSHA, "--"}, basePaths...)...); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return swaps, nil
 }
 
-func (c Config) steeringPaths(ctx context.Context, repoDir, sha string) ([]string, error) {
-	out, err := c.git(ctx, repoDir, "ls-tree", "-r", "-z", "--name-only", sha)
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// swappedNote is data/swapped.md: which steering files the working tree has
+// from the base rather than the pull request, and what that means for a check
+// that compares them against a pin.
+func swappedNote(swaps []swap, dir string) string {
+	var b strings.Builder
+	b.WriteString("# Steering files in this checkout\n\n")
+	if len(swaps) == 0 {
+		b.WriteString("The pull request changes none of CLAUDE.md, CLAUDE.local.md, AGENTS.md, .mcp.json or .claude/: the working tree's are the base branch's and the pull request's alike.\n")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "The working tree holds the base branch's versions of these files, not the pull request's; the pull request's own are under %s, as data:\n\n", filepath.Join(dir, DataDir, "pr-files"))
+	for _, s := range swaps {
+		fmt.Fprintf(&b, "- `%s`: %s\n", s.path, s.what)
+	}
+	b.WriteString("\n`git diff HEAD` shows this swap; `git status` shows these paths as changed. A check that compares `.claude/` against a pinned copy " +
+		"(`scripts/guard_copy.py`, `make guard`) reads the base's copies here, so on a pull request that bumps that pin it fails for that reason alone: " +
+		"compare the pull request's versions under pr-files/ against the pin by hand, and do not count that failure as the pull request's.\n")
+	return b.String()
+}
+
+// steeringBlobs returns each steering path in the tree at sha with its blob ID.
+func (c Config) steeringBlobs(ctx context.Context, repoDir, sha string) (map[string]string, error) {
+	out, err := c.git(ctx, repoDir, "ls-tree", "-r", "-z", sha)
 	if err != nil {
 		return nil, err
 	}
-	var paths []string
-	for _, p := range strings.Split(string(out), "\x00") {
-		if p != "" && IsSteering(p) {
-			paths = append(paths, p)
+	blobs := map[string]string{}
+	for _, entry := range strings.Split(string(out), "\x00") {
+		// "<mode> <type> <object>\t<path>"
+		meta, p, ok := strings.Cut(entry, "\t")
+		if !ok || !IsSteering(p) {
+			continue
+		}
+		fields := strings.Fields(meta)
+		if len(fields) == 3 {
+			blobs[p] = fields[2]
 		}
 	}
-	return paths, nil
+	return blobs, nil
 }
 
 func writeIssue(ctx context.Context, src Source, data string, ref ladder.IssueRef) error {
@@ -444,13 +513,18 @@ func common(task Task, dir string) string {
 		task.Repo, filepath.Join(dir, RepoDir), filepath.Join(dir, DataDir), filepath.Join(dir, OutDir), task.AgentRepo, task.AgentRef, filepath.Join(dir, AgentDir))
 }
 
-func reviewStatement(task Task, dir string) string {
+func reviewStatement(task Task, dir string, swapped bool) string {
+	note := "- The pull request changes none of the steering files (CLAUDE.md, AGENTS.md, .claude/), so the working tree's are both the base's and the pull request's.\n"
+	if swapped {
+		note = fmt.Sprintf("- The pull request changes steering files. The base branch's versions are in the working tree in place of the pull request's; the pull request's own are under %s as data. Read %s first: it lists each swapped file and says that a check comparing .claude/ against a pin (guard_copy.py, `make guard`) fails here for that reason alone on a pull request that bumps the pin.\n",
+			filepath.Join(dir, DataDir, "pr-files"), filepath.Join(dir, DataDir, "swapped.md"))
+	}
 	return fmt.Sprintf("## This task\n\n- Kind: review\n- Pull request: %s#%d, by %s\n- Head SHA: %s\n- Base: %s at %s\n- Lane: %s\n%s"+
-		"- The checkout is at the head SHA. The base branch's CLAUDE.md, AGENTS.md and .claude/ are in the working tree in place of the pull request's; the pull request's own versions are under %s as data, and `git diff HEAD` shows that swap. The diff to review is `git diff %s...%s`.\n"+
+		"- The checkout is at the head SHA. The diff to review is `git diff %s...%s`.\n%s"+
 		"- pr.json, commits.json, comments.json and issues/ in the data files hold the pull request, its commits, its conversation and the linked issues.\n"+
 		"- Write comment.md, private.md (only if needed) and verdict.json to the output folder, as the brief says.\n",
 		task.Repo, task.Number, task.Author, task.HeadSHA, task.BaseRef, task.BaseSHA, task.Lane, common(task, dir),
-		filepath.Join(dir, DataDir, "pr-files"), task.BaseSHA, task.HeadSHA)
+		task.BaseSHA, task.HeadSHA, note)
 }
 
 func buildStatement(task Task, dir string) string {

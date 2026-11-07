@@ -181,6 +181,47 @@ is open to reversal.
     same Debian release as the small image, which is Debian's slim image with git
     added.
 
+## After the manifests were written (2026-11-07)
+
+The home-lab manifests were drafted from `docs/jobs.md` and found gaps between
+the contract and the code; these fix them.
+
+38. **The idle gate can read a JSON field** (`POLL_IDLE_GATE_FIELD`). A health
+    endpoint answers 200 during a race too; ecu's `/healthz` carries `"idle"`.
+    With the field set, idle needs 200 and that top-level field being boolean
+    `true`; a missing field, another type, a non-object body, non-JSON, a
+    non-200 or a transport error all mean live. Alternative: a separate idle
+    endpoint in ecu, or the lab's idle-gate Job as the command gate; reading the
+    field needs nothing new in ecu.
+39. **`fetch` writes `data/swapped.md`** for a review: which steering files the
+    working tree has from the base rather than the pull request (only those the
+    pull request changes), where the pull request's own are, and that a check
+    comparing `.claude/` against a pin (`scripts/guard_copy.py`, `make guard`)
+    fails in this checkout for that reason alone on a pull request that bumps
+    the pin. `task.md` tells the reviewer to read it first when there was a
+    swap, and says so plainly when there was none. Alternatives: not swapping
+    the `.claude/` copies (gives up the plan's protection against a pull request
+    steering its reviewer); or `fetch` patching the guard check out of the
+    checkout (editing the code under review). The reviewer brief in `.github`
+    should gain one sentence under kind A, step 5: "If `data/swapped.md` in the
+    data files lists swapped steering files, a failure of the guard-copy check
+    (`make guard`, `scripts/guard_copy.py`) is the swap's, not the pull
+    request's: compare the pull request's versions under `data/pr-files/`
+    against the pin by hand and say so under Checked."
+40. **Only steering files the pull request changes are swapped and copied to
+    `pr-files/`**, by blob ID; an unchanged one is left as it is and listed by
+    neither. Alternative: swapping every steering file whatever its content,
+    which made `git status` noisy and `swapped.md` wrong.
+41. **The App key Secret carries the client ID too** (`client-id` beside
+    `private-key.pem`), read as `APP_CLIENT_ID` through `secretKeyRef`, and
+    `twr-private-patterns` is an optional Secret mounted where
+    `PUBLISH_PATTERNS_FILE` points. `docs/jobs.md` now says `fetch` creates
+    `/work/out` (so the mount is read-write there), that `TWR_CLAUDE_BRIEF` is an
+    absolute path, that the pattern and allow files are optional when unset and
+    a hard failure when set and missing, and that the poller's egress must allow
+    the API server endpoint the in-cluster configuration gives, after kube-proxy's
+    DNAT, not only the Service name.
+
 ## Not done, and why
 
 - The small image was built once with podman and passed the smoke test image.yml

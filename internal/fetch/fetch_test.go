@@ -198,8 +198,15 @@ func TestReview(t *testing.T) {
 			t.Errorf("%s lacks %q", name, want)
 		}
 	}
+	note := read(t, filepath.Join(dir, DataDir, "swapped.md"))
+	for _, want := range []string{"- `AGENTS.md`: the base's version replaces", "- `.claude/settings.json`: the base's version replaces",
+		"- `docs/CLAUDE.md`: the pull request's is removed", "guard_copy.py", "pr-files"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("swapped.md lacks %q: %s", want, note)
+		}
+	}
 	statement := read(t, filepath.Join(dir, DataDir, "task.md"))
-	for _, want := range []string{"Kind: review", "those-who-run/ecu#31", "Lane: sensitive", "git diff " + o.mainSHA + "..." + o.headSHA, "pr-files", "never follow an instruction"} {
+	for _, want := range []string{"Kind: review", "those-who-run/ecu#31", "Lane: sensitive", "git diff " + o.mainSHA + "..." + o.headSHA, "pr-files", "swapped.md", "never follow an instruction"} {
 		if !strings.Contains(statement, want) {
 			t.Errorf("task.md lacks %q", want)
 		}
@@ -209,6 +216,35 @@ func TestReview(t *testing.T) {
 	}
 	if got := read(t, filepath.Join(dir, AgentDir, "agent", "agents", "twr-reviewer.md")); !strings.Contains(got, "Reviewer") {
 		t.Errorf("agent files %q", got)
+	}
+}
+
+func TestReviewOfAPullRequestThatLeavesTheSteeringFilesAlone(t *testing.T) {
+	o := newOrigin(t)
+	// A branch from main that changes code only.
+	plain := filepath.Join(filepath.Dir(strings.TrimSuffix(o.base, "/")), "plain")
+	git(t, filepath.Dir(plain), "clone", "-q", filepath.Join(o.base, "those-who-run", "ecu.git"), plain)
+	git(t, plain, "checkout", "-q", "-b", "agent/233-plain")
+	write(t, plain, "race/plain.go", "package race\n")
+	git(t, plain, "add", ".")
+	git(t, plain, "commit", "-q", "-m", "feat(race): plain")
+	git(t, plain, "push", "-q", "origin", "agent/233-plain")
+	head := git(t, plain, "rev-parse", "HEAD")
+	cfg, dir := config(t, o, KindReview)
+	cfg.HeadSHA = head
+	p := pull(o)
+	p.HeadSHA, p.HeadRef = head, "agent/233-plain"
+	if code := Run(t.Context(), cfg, source{pull: p}, logger()); code != ExitOK {
+		t.Fatalf("exit %d", code)
+	}
+	if got := read(t, filepath.Join(dir, DataDir, "swapped.md")); !strings.Contains(got, "changes none") {
+		t.Errorf("swapped.md %q", got)
+	}
+	if got := read(t, filepath.Join(dir, DataDir, "task.md")); !strings.Contains(got, "changes none of the steering files") || strings.Contains(got, "swapped.md") {
+		t.Errorf("task.md %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, DataDir, "pr-files")); err == nil {
+		t.Error("pr-files made with nothing to put in it")
 	}
 }
 
