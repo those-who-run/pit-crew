@@ -21,7 +21,8 @@
           {"name": "out", "emptyDir": {"sizeLimit": "256Mi"}},
           {"name": "home", "emptyDir": {"sizeLimit": "256Mi"}},
           {"name": "tmp", "emptyDir": {"sizeLimit": "256Mi"}},
-          {"name": "reviewer-key", "secret": {"secretName": "twr-reviewer-key"}},
+          {"name": "reviewer-key", "secret": {"secretName": "twr-reviewer-key", "items": [{"key": "private-key.pem", "path": "private-key.pem"}]}},
+          {"name": "private-patterns", "secret": {"secretName": "twr-private-patterns", "optional": true}},
           {"name": "claude-token", "secret": {"secretName": "twr-claude-token"}},
           {"name": "hold", "persistentVolumeClaim": {"claimName": "twr-agents-hold"}}
         ],
@@ -36,7 +37,7 @@
               {"name": "FETCH_NUMBER", "value": "{{number}}"},
               {"name": "FETCH_HEAD_SHA", "value": "{{head_sha}}"},
               {"name": "FETCH_AGENT_REF", "value": "v0.2.16"},
-              {"name": "APP_CLIENT_ID", "valueFrom": {"configMapKeyRef": {"name": "twr-agents", "key": "reviewer-client-id"}}},
+              {"name": "APP_CLIENT_ID", "valueFrom": {"secretKeyRef": {"name": "twr-reviewer-key", "key": "client-id"}}},
               {"name": "APP_KEY_FILE", "value": "/secrets/app/private-key.pem"}
             ],
             "securityContext": {"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": {"drop": ["ALL"]}},
@@ -83,7 +84,7 @@
               {"name": "PUBLISH_HEAD_SHA", "value": "{{head_sha}}"},
               {"name": "PUBLISH_HOLD_DIR", "value": "/hold"},
               {"name": "PUBLISH_PATTERNS_FILE", "value": "/etc/pit-crew/private/patterns"},
-              {"name": "APP_CLIENT_ID", "valueFrom": {"configMapKeyRef": {"name": "twr-agents", "key": "reviewer-client-id"}}},
+              {"name": "APP_CLIENT_ID", "valueFrom": {"secretKeyRef": {"name": "twr-reviewer-key", "key": "client-id"}}},
               {"name": "APP_KEY_FILE", "value": "/secrets/app/private-key.pem"}
             ],
             "securityContext": {"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": {"drop": ["ALL"]}},
@@ -95,6 +96,7 @@
               {"name": "out", "mountPath": "/work/out", "readOnly": true},
               {"name": "tmp", "mountPath": "/tmp"},
               {"name": "hold", "mountPath": "/hold"},
+              {"name": "private-patterns", "mountPath": "/etc/pit-crew/private", "readOnly": true},
               {"name": "reviewer-key", "mountPath": "/secrets/app", "readOnly": true}
             ]
           }

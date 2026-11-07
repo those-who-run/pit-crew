@@ -64,7 +64,11 @@ type Limits struct {
 	BackoffLoginExpired time.Duration
 	// IdleGateURL answers 200 when no session is live; IdleGateCmd exits 0 then.
 	IdleGateURL string
-	IdleGateCmd []string
+	// IdleGateField, when set, names a top-level field of the URL's JSON body
+	// that must be boolean true as well: a health endpoint answers 200 during a
+	// race too, and says `"idle": false`.
+	IdleGateField string
+	IdleGateCmd   []string
 	// HeartbeatURL gets the summary by POST; HeartbeatFile gets it written.
 	HeartbeatURL  string
 	HeartbeatFile string
@@ -304,9 +308,15 @@ func (p *Poller) idle(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		_ = resp.Body.Close()
+		if err != nil {
+			return false, err
+		}
 		if resp.StatusCode != http.StatusOK {
+			return false, nil
+		}
+		if p.Limits.IdleGateField != "" && !idleField(body, p.Limits.IdleGateField) {
 			return false, nil
 		}
 	}
@@ -321,6 +331,19 @@ func (p *Poller) idle(ctx context.Context) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+// idleField reports whether the JSON object in body has field set to boolean
+// true. Anything else, a missing field, another type, text that is not an
+// object, is not idle: the gate exists to protect a live session.
+func idleField(body []byte, field string) bool {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(body, &object); err != nil {
+		return false
+	}
+	var value bool
+	raw, ok := object[field]
+	return ok && json.Unmarshal(raw, &value) == nil && value
 }
 
 // start creates the first due unit whose Job is not there yet.

@@ -376,6 +376,35 @@ func TestIdleGate(t *testing.T) {
 	if hb := run(Limits{IdleGateURL: gate.URL}); hb.Gate != "idle" || hb.Started != "" {
 		t.Errorf("a live session did not stop a start: %+v", hb)
 	}
+	// With a field named, a 200 alone is not idle: ecu's /healthz answers 200
+	// during a race too, and says so in its body.
+	ecuHealth := `{"idle": %s, "idle_secs": %s, "activity": %q, "telemetry_connected": true, "telemetry_listening": true,
+	  "last_packet_age_secs": 0.2, "packets": 10, "races_started": 1, "tasks": {"drive": true}, "nats_connected": true, "ok": true}`
+	body := fmt.Sprintf(ecuHealth, "true", "612.5", "idle")
+	field := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer field.Close()
+	if hb := run(Limits{IdleGateURL: field.URL, IdleGateField: "idle"}); hb.Gate != "" || hb.Started == "" {
+		t.Errorf("an idle ecu stopped a start: %+v", hb)
+	}
+	for name, text := range map[string]string{
+		"driving":          fmt.Sprintf(ecuHealth, "false", "0", "driving"),
+		"a missing field":  `{"ok": true}`,
+		"a string":         `{"idle": "true"}`,
+		"a number":         `{"idle": 1}`,
+		"null":             `{"idle": null}`,
+		"not an object":    `[true]`,
+		"not JSON":         `idle`,
+		"an empty body":    ``,
+		"the field nested": `{"status": {"idle": true}}`,
+	} {
+		body = text
+		if hb := run(Limits{IdleGateURL: field.URL, IdleGateField: "idle"}); hb.Gate != "idle" || hb.Started != "" || hb.Errors != 0 {
+			t.Errorf("%s did not close the gate: %+v", name, hb)
+		}
+	}
 	gate.Close()
 	if hb := run(Limits{IdleGateURL: gate.URL}); hb.Gate != "idle" || hb.Errors != 1 {
 		t.Errorf("an unreachable gate did not close: %+v", hb)
@@ -594,8 +623,8 @@ func TestPoliciesFromEnv(t *testing.T) {
 func TestLimitsFromEnv(t *testing.T) {
 	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 	l, err := LimitsFromEnv(env(map[string]string{"POLL_START_JOBS": "true", "POLL_MAX_ACTIVE": "2", "POLL_DAILY_CAP": "20", "POLL_QUIET": "22:00-07:00",
-		"POLL_TZ": "Europe/Dublin", "POLL_BACKOFF_PLAN_LIMIT": "1h", "POLL_IDLE_GATE_CMD": "check-idle --quiet"}))
-	if err != nil || !l.StartJobs || l.MaxActive != 2 || l.DailyCap != 20 || len(l.Quiet) != 1 || l.Location.String() != "Europe/Dublin" ||
+		"POLL_TZ": "Europe/Dublin", "POLL_BACKOFF_PLAN_LIMIT": "1h", "POLL_IDLE_GATE_CMD": "check-idle --quiet", "POLL_IDLE_GATE_FIELD": "idle"}))
+	if err != nil || !l.StartJobs || l.MaxActive != 2 || l.DailyCap != 20 || len(l.Quiet) != 1 || l.Location.String() != "Europe/Dublin" || l.IdleGateField != "idle" ||
 		l.BackoffPlanLimit != time.Hour || l.BackoffLoginExpired != 6*time.Hour || !reflect.DeepEqual(l.IdleGateCmd, []string{"check-idle", "--quiet"}) {
 		t.Errorf("%+v %v", l, err)
 	}

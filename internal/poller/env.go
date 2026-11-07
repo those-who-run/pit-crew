@@ -56,6 +56,7 @@ func LimitsFromEnv(getenv func(string) string) (Limits, error) {
 		BackoffPlanLimit:    3 * time.Hour,
 		BackoffLoginExpired: 6 * time.Hour,
 		IdleGateURL:         getenv("POLL_IDLE_GATE_URL"),
+		IdleGateField:       getenv("POLL_IDLE_GATE_FIELD"),
 		IdleGateCmd:         strings.Fields(getenv("POLL_IDLE_GATE_CMD")),
 		HeartbeatURL:        getenv("POLL_HEARTBEAT_URL"),
 		HeartbeatFile:       getenv("POLL_HEARTBEAT_FILE"),

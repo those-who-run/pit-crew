@@ -60,7 +60,7 @@ All emptyDir, created per Job, sized with `sizeLimit`.
 | `/work/data` | read-write | read-only | read-only | The task's facts, written by `fetch` |
 | `/work/repo` | read-write | read-write | read-only | The checkout the agent works in |
 | `/work/agent` | read-write | read-only | read-only | `those-who-run/.github` at the pinned release: briefs, skills, `agent/lanes.json` |
-| `/work/out` | (none) | read-write | read-only | What the agent wrote for publishing |
+| `/work/out` | read-write (creates it, writes nothing) | read-write | read-only | What the agent wrote for publishing |
 | `/hold` | (none) | (none) | read-write | What a publisher held back for the maintainer (a volume the lab syncs to the vault inbox) |
 
 The read-only mounts on the agent container are what makes `/work/data` and
@@ -74,10 +74,10 @@ are suggestions; the manifests choose.
 
 | Secret | Key | Mounted at | In |
 |---|---|---|---|
-| `twr-reviewer-key` | `private-key.pem` | `/secrets/app/private-key.pem` | `fetch`, `publish-review`, the poller, `ready` |
-| `twr-builder-key` | `private-key.pem` | `/secrets/app/private-key.pem` | `publish-build` |
+| `twr-reviewer-key` | `private-key.pem`, `client-id` | the key at `/secrets/app/private-key.pem`; the client ID as `APP_CLIENT_ID` through `secretKeyRef` | `fetch`, `publish-review`, the poller, `ready` |
+| `twr-builder-key` | `private-key.pem`, `client-id` | the same | `publish-build` |
 | `twr-claude-token` | `token` | `/secrets/claude/token` | `agent` |
-| `twr-private-patterns` (optional) | `patterns`, `allow` | `/etc/pit-crew/private/` | both publishers |
+| `twr-private-patterns` (optional) | `patterns`, `allow` | `/etc/pit-crew/private/` | both publishers, wherever `PUBLISH_PATTERNS_FILE` or `PUBLISH_ALLOW_FILE` names a path in it |
 
 `twr-claude login` writes `twr-claude-token` with `kubectl`, with an annotation
 `pit-crew/issued-at` carrying the date; `twr-claude status` reads the annotation
@@ -144,6 +144,7 @@ nothing to GitHub.
 | `POLL_BACKOFF_PLAN_LIMIT` | `3h` | Start nothing for this long after an agent exited with the plan limit reached |
 | `POLL_BACKOFF_LOGIN_EXPIRED` | `6h` | The same for a login that has expired |
 | `POLL_IDLE_GATE_URL` | (none) | GET it before starting: 200 means idle; anything else, start nothing |
+| `POLL_IDLE_GATE_FIELD` | (none) | With it set, idle needs 200 **and** that top-level field of the JSON body being boolean `true`; a missing field, another type, a body that is not a JSON object, a non-200 or a transport error all mean live. A health endpoint answers 200 during a race too: ecu's `/healthz` says `"idle": true` or `false`, so `POLL_IDLE_GATE_URL=http://ecu.<namespace>.svc:8080/healthz` with `POLL_IDLE_GATE_FIELD=idle` is the gate the plan means |
 | `POLL_IDLE_GATE_CMD` | (none) | Run it instead (or as well): exit 0 means idle |
 | `POLL_HEARTBEAT_URL` | (none) | POST the run's summary as JSON |
 | `POLL_HEARTBEAT_FILE` | (none) | Write the same summary to a file |
@@ -259,16 +260,17 @@ What it writes under `/work/data`:
 | `changes.tsv` | `git diff --name-status base...head` |
 | `lane` | `light`, `standard` or `sensitive` |
 | `issues/<owner>-<name>-<number>.json` | Each linked issue (from the body's `Closes`/`Part of` lines, or the build's issue) with its comments |
-| `pr-files/<path>` | For a review: the pull request's own `CLAUDE.md`, `AGENTS.md`, `CLAUDE.local.md`, `.mcp.json` and `.claude/**`, kept as data |
+| `pr-files/<path>` | For a review: the pull request's own `CLAUDE.md`, `AGENTS.md`, `CLAUDE.local.md`, `.mcp.json` and `.claude/**` where they differ from the base's, kept as data |
+| `swapped.md` | For a review: which steering files the working tree has from the base and not the pull request, and that a check comparing `.claude/` against a pin (`scripts/guard_copy.py`) fails there for that reason alone on a pull request that bumps the pin; `task.md` points the reviewer at it |
 
 The working tree at `/work/repo`:
 
 - review: the head commit checked out, with the base branch's `CLAUDE.md`,
   `AGENTS.md`, `CLAUDE.local.md`, `.mcp.json` and `.claude/` in place of the pull
-  request's (added, replaced or removed as the base has them), so a pull request
-  cannot steer its own reviewer. `git diff HEAD` therefore shows those files as
-  changed; the diff to review is `git diff <base>...<head>`, both SHAs in
-  `task.json`;
+  request's where they differ (added, replaced or removed as the base has them),
+  so a pull request cannot steer its own reviewer. `git diff HEAD` therefore shows
+  those files as changed; the diff to review is `git diff <base>...<head>`, both
+  SHAs in `task.json`;
 - build: the base branch checked out on a new branch `agent/<issue>-<slug>`, the
   slug from the issue title, with `user.name` and `user.email` set to the
   builder's;
@@ -287,7 +289,7 @@ command line is fixed by the wrapper; the manifest sets the environment.
 | Variable | Default | Meaning |
 |---|---|---|
 | `TWR_CLAUDE_TOKEN_FILE` | `/secrets/claude/token` | The `setup-token` token, one line |
-| `TWR_CLAUDE_BRIEF` | (required) | The brief: an agent file (`agent/agents/twr-reviewer.md`) or a skill, relative to `/work/agent`; YAML front matter is stripped |
+| `TWR_CLAUDE_BRIEF` | (required) | The brief, as an absolute path: an agent file (`/work/agent/agent/agents/twr-reviewer.md`) or a skill's `SKILL.md`; YAML front matter is stripped |
 | `TWR_CLAUDE_TASK` | `/work/data/task.md` | The task statement, appended to the brief as the prompt |
 | `TWR_CLAUDE_WORKDIR` | `/work/repo` | Where `claude` runs |
 | `TWR_CLAUDE_ADD_DIRS` | `/work/data,/work/agent,/work/out` | Directories the file tools may reach besides the working directory |
@@ -335,8 +337,8 @@ what was not.
 | `PUBLISH_REPO`, `PUBLISH_NUMBER`, `PUBLISH_HEAD_SHA` | (required) | The same values the Job gave `fetch`; cross-checked against `task.json` |
 | `PUBLISH_DIR` | `/work` | |
 | `PUBLISH_HOLD_DIR` | (required) | Where held comments and `private.md` go |
-| `PUBLISH_ALLOW_FILE` | (none) | More public hosts, in paddock's `private_scan.allow` format |
-| `PUBLISH_PATTERNS_FILE` | (none) | The lab's own patterns: `name regexp` per line |
+| `PUBLISH_ALLOW_FILE` | (none) | Optional: more public hosts, in paddock's `private_scan.allow` format. Unset means the built-in allowlist alone |
+| `PUBLISH_PATTERNS_FILE` | (none) | Optional: the lab's own patterns, `name regexp` per line. Unset means no extra patterns. A path that is set but missing or unreadable, or a line that does not parse, is a configuration failure (exit 2): nothing is posted |
 
 Reads `/work/out/verdict.json`, `comment.md` and `private.md`. If the head moved:
 exit 11, nothing posted. If the output fails a check: nothing of the model's is
@@ -389,7 +391,8 @@ prints the lane; `--config` names the `lanes.json` to use.
 
 | Step | Needs |
 |---|---|
-| poller, `ready` | `api.github.com`; the Kubernetes API (`kubernetes.default.svc`); the idle gate and heartbeat hosts the lab chooses |
+| poller | `api.github.com`; the Kubernetes API server at the endpoint the in-cluster configuration gives (`KUBERNETES_SERVICE_HOST:PORT`, the `kubernetes.default.svc` ClusterIP, which kube-proxy DNATs to the node's own address and the API server's port, so an egress policy must allow that endpoint, not only the Service); the idle gate (ecu's `/healthz`) and the heartbeat host the lab chooses |
+| `ready` | `api.github.com` |
 | fetch | `api.github.com`, `github.com` (clone) |
 | agent | `api.anthropic.com`, `platform.claude.com` (the token exchange), `claude.ai`; `github.com` only for `git fetch origin main` in a fix (anonymous; the repositories are public); `proxy.golang.org` and `sum.golang.org`, `pypi.org` and `files.pythonhosted.org`, `registry.npmjs.org` for `make check` |
 | publish | `api.github.com`, `github.com` (push) |
