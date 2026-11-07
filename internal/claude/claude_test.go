@@ -2,12 +2,16 @@ package claude
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -15,9 +19,14 @@ import (
 // standard input under dir, then runs the script given.
 func stub(t *testing.T, dir, name, script string) string {
 	t.Helper()
+	return executable(t, dir, name, "printf '%s\\n' \"$@\" > \"$STUB_DIR/"+name+".args\"\nenv > \"$STUB_DIR/"+name+".env\"\ncat > \"$STUB_DIR/"+name+".stdin\"\n"+script)
+}
+
+// executable writes a shell script under dir and returns its path.
+func executable(t *testing.T, dir, name, script string) string {
+	t.Helper()
 	path := filepath.Join(dir, name)
-	text := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$STUB_DIR/" + name + ".args\"\nenv > \"$STUB_DIR/" + name + ".env\"\ncat > \"$STUB_DIR/" + name + ".stdin\"\n" + script
-	if err := os.WriteFile(path, []byte(text), 0o700); err != nil { //nolint:gosec // a test's own executable
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil { //nolint:gosec // a test's own executable
 		t.Fatal(err)
 	}
 	return path
@@ -275,6 +284,57 @@ const kubectlStub = `case "$*" in
 esac
 `
 
+// terminal stands in for the maintainer's stderr: onWrite sees everything
+// written so far, so a test can answer a prompt the way the maintainer would.
+type terminal struct {
+	bytes.Buffer
+	onWrite func(sofar string)
+}
+
+func (tm *terminal) Write(p []byte) (int, error) {
+	n, err := tm.Buffer.Write(p)
+	tm.onWrite(tm.String())
+	return n, err
+}
+
+// afterPrompt is the maintainer at the keyboard: it gives the code only once
+// the prompt has been seen, and gives up (end of input) after a while, so a
+// wrapper that keeps the prompt back fails instead of hanging.
+type afterPrompt struct {
+	seen <-chan struct{}
+	code io.Reader
+}
+
+func (r *afterPrompt) Read(p []byte) (int, error) {
+	select {
+	case <-r.seen:
+		return r.code.Read(p)
+	case <-time.After(10 * time.Second):
+		return 0, io.EOF
+	}
+}
+
+// secretManifest is what the kubectl stub recorded `apply` receiving.
+type secretManifest struct {
+	Metadata struct {
+		Name        string            `json:"name"`
+		Namespace   string            `json:"namespace"`
+		Annotations map[string]string `json:"annotations"`
+	} `json:"metadata"`
+	Data map[string]string `json:"data"`
+}
+
+func applied(t *testing.T, dir string) secretManifest {
+	t.Helper()
+	var secret secretManifest
+	if err := json.Unmarshal([]byte(read(t, filepath.Join(dir, "applied.json"))), &secret); err != nil {
+		t.Fatal(err)
+	}
+	return secret
+}
+
+var tokenInSecret = base64.StdEncoding.EncodeToString([]byte(token))
+
 func TestLoginFromSetupToken(t *testing.T) {
 	t.Setenv("STUB_DIR", t.TempDir())
 	dir := os.Getenv("STUB_DIR")
@@ -293,22 +353,11 @@ func TestLoginFromSetupToken(t *testing.T) {
 	if !strings.Contains(stderr.String(), "Your token: <token>") || !strings.Contains(stderr.String(), "issued 2026-11-06") {
 		t.Errorf("stderr %q", stderr.String())
 	}
-	applied := read(t, filepath.Join(dir, "applied.json"))
-	var secret struct {
-		Metadata struct {
-			Name        string            `json:"name"`
-			Namespace   string            `json:"namespace"`
-			Annotations map[string]string `json:"annotations"`
-		} `json:"metadata"`
-		Data map[string]string `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(applied), &secret); err != nil {
-		t.Fatal(err)
-	}
+	secret := applied(t, dir)
 	if secret.Metadata.Name != "twr-claude-token" || secret.Metadata.Namespace != "twr-agents" || secret.Metadata.Annotations[IssuedAtAnnotation] != "2026-11-06T09:00:00Z" {
 		t.Errorf("metadata %+v", secret.Metadata)
 	}
-	if secret.Data["token"] == "" {
+	if secret.Data["token"] != tokenInSecret {
 		t.Errorf("data %v", secret.Data)
 	}
 	args := read(t, filepath.Join(dir, "apply.args"))
@@ -328,17 +377,111 @@ func TestLoginFromSetupToken(t *testing.T) {
 	}
 }
 
-func TestLoginFromStdin(t *testing.T) {
+// On a headless host the CLI cannot open a browser: it prints the sign-in URL
+// and a prompt with no newline, waits for the code on stdin, and prints the
+// token only then. The maintainer can only paste the code once the prompt has
+// reached the terminal, so a wrapper that holds the CLI's output back until it
+// exits never gets the code, and the token never comes.
+func TestLoginShowsSetupTokensPromptOnAHeadlessHost(t *testing.T) {
 	t.Setenv("STUB_DIR", t.TempDir())
 	dir := os.Getenv("STUB_DIR")
 	cfg := secretConfig(t, dir, kubectlStub)
-	cfg.Claude = filepath.Join(dir, "no-claude")
-	var stderr bytes.Buffer
-	if code := Login(t.Context(), cfg, true, strings.NewReader(token+"\n"), &stderr); code != ExitOK {
+	const url = "https://claude.ai/oauth/authorize?x"
+	const prompt = "Paste code here if prompted > "
+	cfg.Claude = executable(t, dir, "claude", "echo 'Browser didn'\\''t open. Use the url below to sign in:'\necho '"+url+"'\n"+
+		"printf '%s' '"+prompt+"'\nread code\nprintf '%s\\n' \"$code\" > \"$STUB_DIR/code\"\necho\necho 'Your token: "+token+"'\n")
+	seen := make(chan struct{})
+	var once sync.Once
+	stderr := &terminal{onWrite: func(sofar string) {
+		if strings.Contains(sofar, prompt) {
+			once.Do(func() { close(seen) })
+		}
+	}}
+	stdin := &afterPrompt{seen: seen, code: strings.NewReader("the-code#the-state\n")}
+	if code := Login(t.Context(), cfg, false, stdin, stderr); code != ExitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	if _, err := os.Stat(filepath.Join(dir, "applied.json")); err != nil { //nolint:gosec // the test's own temp dir
-		t.Error("nothing applied")
+	if got := strings.TrimSpace(read(t, filepath.Join(dir, "code"))); got != "the-code#the-state" {
+		t.Errorf("the CLI read %q as the code: the prompt did not reach the terminal while it waited", got)
+	}
+	out := stderr.String()
+	if i, j, k := strings.Index(out, url), strings.Index(out, prompt), strings.Index(out, "Your token: <token>"); i < 0 || j < i || k < j {
+		t.Errorf("stderr %q: want the URL, then the prompt, then the token's line", out)
+	}
+	if strings.Contains(out, token) {
+		t.Error("the token reached the terminal")
+	}
+	if got := applied(t, dir).Data["token"]; got != tokenInSecret {
+		t.Errorf("kubectl received %q", got)
+	}
+}
+
+func TestForwardKeepsTheTokenBackWhateverTheReads(t *testing.T) {
+	cases := []struct {
+		name, in, out, token string
+	}{
+		{"a prompt with no newline", "Open https://claude.ai/oauth/authorize?x\nPaste code here > ", "Open https://claude.ai/oauth/authorize?x\nPaste code here > ", ""},
+		{"the token on its line", "Your token: " + token + "\nDone.\n", "Your token: <token>\nDone.\n", token},
+		{"the token last, with no newline", token, "<token>", token},
+		{"too short to be a token", "sk-ant-oat01-tooshort\n", "sk-ant-oat01-tooshort\n", ""},
+		{"words that start like the prefix", "ask sk-an skip\n", "ask sk-an skip\n", ""},
+	}
+	for _, c := range cases {
+		for _, oneByte := range []bool{false, true} {
+			var r io.Reader = strings.NewReader(c.in)
+			if oneByte {
+				r = iotest.OneByteReader(r)
+			}
+			var out bytes.Buffer
+			if got := forward(r, &out); got != c.token || out.String() != c.out {
+				t.Errorf("%s (one byte at a time: %v): token %q, wrote %q", c.name, oneByte, got, out.String())
+			}
+		}
+	}
+}
+
+func TestLoginFromStdin(t *testing.T) {
+	cases := []struct{ name, stdin string }{
+		{"the token, Enter, then whatever else", token + "\nsk-ant-oat01-" + strings.Repeat("junk", 8) + "\nmore\n"},
+		{"the token with no newline", token},
+		{"a blank line, then the token with spaces around it", "\n  " + token + "  \n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("STUB_DIR", t.TempDir())
+			dir := os.Getenv("STUB_DIR")
+			cfg := secretConfig(t, dir, kubectlStub)
+			cfg.Claude = filepath.Join(dir, "no-claude")
+			var stderr bytes.Buffer
+			if code := Login(t.Context(), cfg, true, strings.NewReader(c.stdin), &stderr); code != ExitOK {
+				t.Fatalf("exit %d: %s", code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "twr-claude: paste the token from `claude setup-token`, then Enter\n") {
+				t.Errorf("stderr %q: no prompt", stderr.String())
+			}
+			if got := applied(t, dir).Data["token"]; got != tokenInSecret {
+				t.Errorf("kubectl received %q, want the first line alone", got)
+			}
+		})
+	}
+}
+
+func TestLoginFromStdinRefusesWhatIsNotAToken(t *testing.T) {
+	// The browser's authorisation code, and a token with the code's tail.
+	for _, line := range []string{"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6#9f8e7d6c-5b4a-3c2d-1e0f-a9b8c7d6e5f4", token + "#state"} {
+		t.Setenv("STUB_DIR", t.TempDir())
+		dir := os.Getenv("STUB_DIR")
+		cfg := secretConfig(t, dir, kubectlStub)
+		var stderr bytes.Buffer
+		if code := Login(t.Context(), cfg, true, strings.NewReader(line+"\n"), &stderr); code != ExitFailed {
+			t.Errorf("%q: exit %d, want %d", line, code, ExitFailed)
+		}
+		if !strings.Contains(stderr.String(), "that is not a setup-token token (they start sk-ant-oat01-); the browser's code goes to `claude setup-token`'s own prompt") {
+			t.Errorf("%q: stderr %q", line, stderr.String())
+		}
+		if _, err := os.Stat(filepath.Join(dir, "kubectl.args")); err == nil { //nolint:gosec // the test's own temp dir
+			t.Errorf("%q: kubectl was run", line)
+		}
 	}
 }
 
@@ -358,6 +501,14 @@ func TestLoginFailures(t *testing.T) {
 		cfg.Claude = stub(t, dir, "claude", "exit 3\n")
 		if code := Login(t.Context(), cfg, false, strings.NewReader(""), &bytes.Buffer{}); code != ExitFailed {
 			t.Errorf("exit %d", code)
+		}
+	})
+	t.Run("no claude", func(t *testing.T) {
+		cfg := secretConfig(t, dir, kubectlStub)
+		cfg.Claude = filepath.Join(dir, "no-claude")
+		var stderr bytes.Buffer
+		if code := Login(t.Context(), cfg, false, strings.NewReader(""), &stderr); code != ExitFailed || !strings.Contains(stderr.String(), "claude setup-token:") {
+			t.Errorf("exit %d: %s", code, stderr.String())
 		}
 	})
 	t.Run("an empty stdin", func(t *testing.T) {

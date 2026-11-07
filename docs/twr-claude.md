@@ -11,19 +11,30 @@ Claude runs on the maintainer's subscription, through a long-lived token that
 
 ## `login`
 
-Runs `claude setup-token`, which opens the browser authorisation flow and prints
-the token; the wrapper reads the token from that process's output and writes it
+Runs `claude setup-token`, which starts the browser authorisation flow and prints
+the token. Everything the CLI prints goes to the terminal as it is printed, with
+the token replaced by `<token>`; the wrapper keeps the token and writes it
 straight into the Secret with `kubectl create secret generic ... --from-file`
 through a pipe, so it never reaches the terminal, the shell history or a file. It
 annotates the Secret with `pit-crew/issued-at`, so `status` and the heartbeat can
-say how old the token is. `--from-stdin` reads a token pasted on standard input
-instead, for when the CLI's output cannot be captured.
+say how old the token is.
 
-Nothing about `login` has been run for real: `claude setup-token` needs the
-subscription and a browser, and this was built unattended. What is tested is the
-wrapper's handling with a stub `claude` and a stub `kubectl` on `PATH`: the token
-goes to `kubectl`'s standard input and nowhere else, and the Secret's name,
-namespace, key and annotation are what the manifests expect.
+On a headless host, such as the maintainer's cluster host over SSH, the CLI cannot
+open a browser: it prints a sign-in URL and asks for a code. The wrapper shows
+both as they come (the prompt has no newline after it), the maintainer opens the
+URL elsewhere, pastes the code at the prompt, which the wrapper passes through to
+the CLI, and the CLI then prints the token, which the wrapper captures as above.
+
+`--from-stdin` asks for the token and reads one line instead, for when the CLI's
+output cannot be captured: paste the token from your own `claude setup-token` and
+press Enter. Only a line that is a token (`sk-ant-oat01-` and at least 20 more
+characters) is accepted; the browser's authorisation code (`<code>#<state>`) is
+refused with a message saying where it goes, and nothing is written.
+
+What is tested is the wrapper's handling with a stub `claude` and a stub
+`kubectl` on `PATH`: the URL and the prompt reach the terminal before the code is
+given, the token goes to `kubectl`'s standard input and nowhere else, and the
+Secret's name, namespace, key and annotation are what the manifests expect.
 
 ## `status`
 
@@ -103,6 +114,12 @@ official documentation on 2026-11-06:
 - Claude Code with a subscription token needs `api.anthropic.com`,
   `platform.claude.com` and `claude.ai` (the network documentation).
 
+Seen in use on the maintainer's cluster host, which is headless: `claude
+setup-token` prints a sign-in URL and asks for a code on its standard output,
+then waits for the code on standard input, and the wrapper forwards both. Pasting
+the browser's code to `login --from-stdin` instead of the token is what the
+refusal above is for.
+
 Not checked, because it needs a real session or the subscription:
 
 - `--max-turns` is in the CLI reference but not in the local `--help` of
@@ -112,7 +129,5 @@ Not checked, because it needs a real session or the subscription:
   an expired token or the usage limit. The documentation says the CLI exits
   non-zero and prints the failure as the result; `run` reads both the exit code
   and the result's text.
-- Whether `claude setup-token` needs a terminal. If it does, `login --from-stdin`
-  is the way.
 - The subscription's terms for unattended use: the plan's note, and the
   maintainer's to check.

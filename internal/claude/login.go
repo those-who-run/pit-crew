@@ -1,12 +1,14 @@
 package claude
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -52,8 +54,12 @@ func SecretConfigFromEnv(getenv func(string) string) (SecretConfig, error) {
 // IssuedAtAnnotation records when the token was made.
 const IssuedAtAnnotation = "pit-crew/issued-at"
 
-// The shape of a `setup-token` token in the CLI's output.
-var oauthTokenRE = regexp.MustCompile(`sk-ant-oat01-[A-Za-z0-9_-]{20,}`)
+// The shape of a `setup-token` token in the CLI's output: tokenPrefix, then
+// at least 20 more of the characters isTokenByte allows.
+var oauthTokenRE = regexp.MustCompile(tokenPrefix + "[A-Za-z0-9_-]{20,}")
+
+// tokenPrefix is what every setup-token token starts with.
+const tokenPrefix = "sk-ant-oat01-" //nolint:gosec // the shape of a token, not one
 
 func (c SecretConfig) kubectl(ctx context.Context, args ...string) *exec.Cmd {
 	all := []string{"--namespace", c.Namespace}
@@ -64,32 +70,56 @@ func (c SecretConfig) kubectl(ctx context.Context, args ...string) *exec.Cmd {
 }
 
 // Login makes the token and writes it into the Secret. With fromStdin false it
-// runs `claude setup-token`, forwards that process's output to stderr with the
-// token taken out, and keeps the token; with fromStdin true it reads the token
-// from stdin instead. The token goes to kubectl's standard input and nowhere
-// else: not the terminal, not a file, not the shell's history.
+// runs `claude setup-token`, forwards that process's output to stderr as it
+// comes with the token taken out, and keeps the token; with fromStdin true it
+// asks for the token and reads one line from stdin instead. The token goes to
+// kubectl's standard input and nowhere else: not the terminal, not a file, not
+// the shell's history.
 func Login(ctx context.Context, cfg SecretConfig, fromStdin bool, stdin io.Reader, stderr io.Writer) int {
 	var token string
 	if fromStdin {
-		data, err := io.ReadAll(io.LimitReader(stdin, 1<<16))
+		_, _ = fmt.Fprintln(stderr, "twr-claude: paste the token from `claude setup-token`, then Enter")
+		line, err := firstLine(io.LimitReader(stdin, 1<<16))
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "twr-claude: read stdin: %v\n", err)
 			return ExitFailed
 		}
-		token = strings.TrimSpace(string(data))
+		if line == "" {
+			_, _ = fmt.Fprintln(stderr, "twr-claude: nothing on stdin")
+			return ExitFailed
+		}
+		// The browser's authorisation code looks nothing like a token, and the
+		// Secret must never hold it.
+		if oauthTokenRE.FindString(line) != line {
+			_, _ = fmt.Fprintln(stderr, "twr-claude: that is not a setup-token token (they start sk-ant-oat01-); the browser's code goes to `claude setup-token`'s own prompt, which then prints the token")
+			return ExitFailed
+		}
+		token = line
 	} else {
 		cmd := exec.CommandContext(ctx, cfg.Claude, "setup-token") //nolint:gosec // the CLI is the maintainer's configuration
 		cmd.Stdin = stdin
-		var out bytes.Buffer
-		cmd.Stdout = &out
-		cmd.Stderr = stderr
-		if err := cmd.Run(); err != nil {
+		// Whatever the CLI prints, on either stream, comes through one pipe and
+		// reaches the terminal while it says it, less the token: on a headless
+		// host it prints a sign-in URL, asks for a code and waits for it on
+		// stdin, which passes through.
+		pr, pw, err := os.Pipe()
+		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "twr-claude: claude setup-token: %v\n", err)
 			return ExitFailed
 		}
-		token = oauthTokenRE.FindString(out.String())
-		// What the CLI said, less the token, so the maintainer sees any instruction.
-		_, _ = fmt.Fprint(stderr, oauthTokenRE.ReplaceAllString(out.String(), "<token>"))
+		defer func() { _ = pr.Close() }()
+		cmd.Stdout, cmd.Stderr = pw, pw
+		err = cmd.Start()
+		_ = pw.Close()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "twr-claude: claude setup-token: %v\n", err)
+			return ExitFailed
+		}
+		token = forward(pr, stderr)
+		if err := cmd.Wait(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "twr-claude: claude setup-token: %v\n", err)
+			return ExitFailed
+		}
 	}
 	if token == "" {
 		_, _ = fmt.Fprintln(stderr, "twr-claude: no token found; run `claude setup-token` yourself and pass it with --from-stdin")
@@ -123,6 +153,78 @@ func Login(ctx context.Context, cfg SecretConfig, fromStdin bool, stdin io.Reade
 	}
 	_, _ = fmt.Fprintf(stderr, "twr-claude: Secret %s/%s written, key %s, issued %s\n", cfg.Namespace, cfg.Name, cfg.Key, now().UTC().Format("2006-01-02"))
 	return ExitOK
+}
+
+// firstLine returns the first line of r that holds something, trimmed, so Enter
+// ends the paste and Ctrl+D is not needed. A last line without a newline
+// counts; an empty result means r held nothing but blank lines.
+func firstLine(r io.Reader) (string, error) {
+	in := bufio.NewReader(r)
+	for {
+		line, err := in.ReadString('\n')
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed, nil
+		}
+		if errors.Is(err, io.EOF) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+}
+
+// forward writes what setup-token prints to w as it arrives, so a sign-in URL
+// and a prompt without a trailing newline reach the terminal while the CLI
+// waits for the code, and returns the first token it saw. Each token is
+// written as <token>; a tail that may still become one waits for the next
+// read, so no part of a token split across reads gets out.
+func forward(r io.Reader, w io.Writer) string {
+	var token string
+	var held []byte
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		held = append(held, buf[:n]...)
+		safe := len(held)
+		if err == nil {
+			safe -= tokenTail(held)
+		}
+		part := held[:safe]
+		if token == "" {
+			token = string(oauthTokenRE.Find(part))
+		}
+		_, _ = w.Write(oauthTokenRE.ReplaceAll(part, []byte("<token>")))
+		held = append([]byte(nil), held[safe:]...)
+		if err != nil {
+			return token
+		}
+	}
+}
+
+// tokenTail is the length of the suffix of b that more output could turn into
+// a token, or lengthen: a token the CLI has not finished printing, or the
+// start of its prefix.
+func tokenTail(b []byte) int {
+	start := len(b)
+	for start > 0 && isTokenByte(b[start-1]) {
+		start--
+	}
+	run := b[start:]
+	if i := bytes.Index(run, []byte(tokenPrefix)); i >= 0 {
+		return len(run) - i
+	}
+	for n := min(len(run), len(tokenPrefix)-1); n > 0; n-- {
+		if bytes.HasSuffix(run, []byte(tokenPrefix[:n])) {
+			return n
+		}
+	}
+	return 0
+}
+
+// isTokenByte says whether c can appear in a token.
+func isTokenByte(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-'
 }
 
 // annotate adds an annotation to a Secret manifest.
