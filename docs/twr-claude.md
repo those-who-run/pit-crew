@@ -75,6 +75,17 @@ has expired or the token is invalid; 75 the plan's usage limit was reached; 71 t
 turn limit; 72 the time limit; 1 the run failed otherwise. The poller backs off on
 70 and 75.
 
+What `run` prints: the CLI's standard error as it arrives, then its own summary,
+`twr-claude: <outcome> (exit <n>, <n> turns, <n> ms)`, then one line with the
+result's shape, `twr-claude: result: subtype <s>, is_error <b>, <n> turns, cost
+$<usd>` (the cost when the result has one). When the outcome is not `ok` it
+also prints why, since the Job's `out` directory dies with the pod before
+anyone reads `agent.json`: the result's `result` text and `errors`, the last
+2000 characters of each, with any token in them replaced by `<token>`; or, when
+standard output holds no result object at all, its last 2000 characters,
+labelled as such and redacted the same way. The CLI's standard error is not
+repeated: it was forwarded as it was written.
+
 ## What was checked, and what was not
 
 Checked against the installed CLI (`claude --help`, version 2.1.319) and the
@@ -102,7 +113,13 @@ official documentation on 2026-11-06:
   "OAuth token revoked", "OAuth token has expired", "Invalid authentication
   credentials", 401) and for the usage limit ("You've hit your session limit",
   "weekly limit", "Opus limit", "Request rejected (429)") are what `run` maps to
-  exit codes 70 and 75.
+  exit codes 70 and 75. Seen with the runner image and a bogus token: the CLI
+  exits 1 after one turn with a result of subtype `success`, `is_error` true,
+  `terminal_reason` `api_error` and the text `Failed to authenticate. API
+  Error: 401 OAuth access token is invalid.`, and nothing on standard error; so
+  "Failed to authenticate", "OAuth access token is invalid" and `api_error`
+  with a 401 in the result text are exit 70 too. A 401 in the text of a result
+  that ended ok (the model ran `curl` against something) stays 0.
 - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` strips credentials from the environment
   of the commands the model runs (documentation). Whether it strips
   `CLAUDE_CODE_OAUTH_TOKEN` by name is not stated; a run with the scrub on checks

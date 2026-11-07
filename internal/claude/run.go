@@ -231,22 +231,118 @@ type Result struct {
 	// Outcome is the wrapper's reading: ok, login-expired, plan-limit, max-turns,
 	// timeout or failed.
 	Outcome string `json:"outcome"`
+	// Text is the CLI's `result`, the assistant's final text or the error's
+	// message, and Errors its `errors`. Both are read with any token replaced by
+	// <token>, go on standard error when the run did not end ok, and stay out of
+	// agent.json, whose fields docs/jobs.md lists.
+	Text   string   `json:"-"`
+	Errors []string `json:"-"`
+	// TerminalReason is the CLI's `terminal_reason`, such as api_error, which
+	// with a 401 in Text is a rejected token.
+	TerminalReason string `json:"-"`
+	// Parsed says whether a result object was read from standard output at all;
+	// when it was not, standard output itself is what there is to show.
+	Parsed bool `json:"-"`
+}
+
+// parseResult reads the CLI's result object, the last JSON object on standard
+// output, with any token in its text redacted.
+func parseResult(stdout []byte) Result {
+	var raw struct {
+		Result
+		Text           string   `json:"result"`
+		Errors         []string `json:"errors"`
+		TerminalReason string   `json:"terminal_reason"`
+	}
+	start := bytes.IndexByte(stdout, '{')
+	if start < 0 || json.Unmarshal(stdout[start:], &raw) != nil {
+		return Result{}
+	}
+	result := raw.Result
+	result.Parsed = true
+	result.Text = redact(raw.Text)
+	result.TerminalReason = raw.TerminalReason
+	for _, e := range raw.Errors {
+		result.Errors = append(result.Errors, redact(e))
+	}
+	return result
+}
+
+// redact replaces every token in s with <token>.
+func redact(s string) string {
+	return oauthTokenRE.ReplaceAllString(s, "<token>")
+}
+
+// reasonLimit is how much of the result's text, or of standard output, the
+// reason for a failed run shows: the end of it, where the error is.
+const reasonLimit = 2000
+
+// tail returns the last n characters of s and says whether anything was cut.
+func tail(s string, n int) (string, bool) {
+	r := []rune(s)
+	if len(r) <= n {
+		return s, false
+	}
+	return string(r[len(r)-n:]), true
+}
+
+// explain writes, after the summary line, what the CLI said: one line with the
+// result's shape, and, when the run did not end ok, the reason, so the Job's log
+// has it when the out directory is gone with the pod. The CLI's standard error
+// is not repeated: it was forwarded as it was written.
+func explain(w io.Writer, result Result, stdout []byte) {
+	if result.Parsed {
+		line := fmt.Sprintf("twr-claude: result: subtype %s, is_error %t, %d turns", result.Subtype, result.IsError, result.NumTurns)
+		if result.CostUSD > 0 {
+			line += fmt.Sprintf(", cost $%.4f", result.CostUSD)
+		}
+		_, _ = fmt.Fprintln(w, line)
+	}
+	if result.Outcome == "ok" {
+		return
+	}
+	switch {
+	case !result.Parsed && len(bytes.TrimSpace(stdout)) == 0:
+		_, _ = fmt.Fprintln(w, "twr-claude: no result object on standard output, and nothing else there")
+	case !result.Parsed:
+		text, cut := tail(redact(string(stdout)), reasonLimit)
+		_, _ = fmt.Fprintf(w, "twr-claude: no result object on standard output; %s:\n%s\n", bounded("what is there", cut), strings.TrimRight(text, "\n"))
+	case result.Text == "" && len(result.Errors) == 0:
+		_, _ = fmt.Fprintln(w, "twr-claude: the result carries no text")
+	default:
+		if result.Text != "" {
+			text, cut := tail(result.Text, reasonLimit)
+			_, _ = fmt.Fprintf(w, "twr-claude: %s:\n%s\n", bounded("result text", cut), strings.TrimRight(text, "\n"))
+		}
+		for _, e := range result.Errors {
+			text, cut := tail(e, reasonLimit)
+			_, _ = fmt.Fprintf(w, "twr-claude: %s: %s\n", bounded("result error", cut), text)
+		}
+	}
+}
+
+// bounded labels a text that was cut to reasonLimit characters.
+func bounded(label string, cut bool) string {
+	if cut {
+		return fmt.Sprintf("%s (last %d characters)", label, reasonLimit)
+	}
+	return label
 }
 
 // The documented error strings for an expired or invalid login and for the
-// plan's usage limit, matched without case in the CLI's output.
+// plan's usage limit, matched without case in the CLI's output. A bogus token
+// ends the run after one turn with a result of subtype success, is_error true,
+// terminal_reason api_error and the text "Failed to authenticate. API Error:
+// 401 OAuth access token is invalid.", and nothing on standard error.
 var (
-	loginExpiredRE = regexp.MustCompile(`(?i)login expired|not logged in|oauth token (?:revoked|has expired|expired)|invalid authentication credentials|authentication_error|invalid api key`)
+	loginExpiredRE = regexp.MustCompile(`(?i)login expired|not logged in|oauth (?:access )?token (?:revoked|has expired|expired|is invalid)|invalid authentication credentials|authentication_error|invalid api key|failed to authenticate`)
+	unauthorizedRE = regexp.MustCompile(`\b401\b`)
 	planLimitRE    = regexp.MustCompile(`(?i)hit your (?:session|weekly|opus|sonnet|monthly|\w+) limit|usage limit|rate_limit|request rejected \(429\)|temporarily limiting requests|credit balance is too low`)
 )
 
 // Classify reads the CLI's exit code and output and names the outcome.
 func Classify(exit int, stdout, stderr []byte) (Result, int) {
-	var result Result
-	// The result is the last JSON object on standard output.
-	if start := bytes.IndexByte(stdout, '{'); start >= 0 {
-		_ = json.Unmarshal(stdout[start:], &result)
-	}
+	result := parseResult(stdout)
 	result.Exit = exit
 	text := string(stdout) + "\n" + string(stderr)
 	switch {
@@ -256,7 +352,7 @@ func Classify(exit int, stdout, stderr []byte) (Result, int) {
 	case result.Subtype == "error_max_turns":
 		result.Outcome = "max-turns"
 		return result, ExitMaxTurns
-	case loginExpiredRE.MatchString(text):
+	case loginExpiredRE.MatchString(text), result.TerminalReason == "api_error" && unauthorizedRE.MatchString(result.Text):
 		result.Outcome = "login-expired"
 		return result, ExitLoginExpired
 	case planLimitRE.MatchString(text):
@@ -342,5 +438,6 @@ func Run(ctx context.Context, cfg RunConfig, environ []string, stderr io.Writer)
 		}
 	}
 	_, _ = fmt.Fprintf(stderr, "twr-claude: %s (exit %d, %d turns, %d ms)\n", result.Outcome, exit, result.NumTurns, result.DurationMS)
+	explain(stderr, result, stdout.Bytes())
 	return code
 }
