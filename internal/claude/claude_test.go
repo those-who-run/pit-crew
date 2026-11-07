@@ -84,7 +84,7 @@ func TestRunStartsClaudeWithTheTokenAlone(t *testing.T) {
 	}
 	args := strings.Split(strings.TrimSpace(read(t, filepath.Join(dir, "claude.args"))), "\n")
 	want := []string{"-p", "--restricted", "--strict-mcp-config", "--permission-mode", "dontAsk", "--permission-prompts", "none",
-		"--tools", "Read,Grep,Glob,Write,Bash", "--max-turns", "80", "--output-format", "json", "--no-session-persistence",
+		"--tools", "Read,Grep,Glob,Write,Bash", "--allowedTools", "Read,Grep,Glob,Write,Bash", "--max-turns", "80", "--output-format", "json", "--no-session-persistence",
 		"--model", "opus", "--add-dir", "/work/data", "--add-dir", "/work/out"}
 	if !reflect.DeepEqual(args, want) {
 		t.Errorf("args %q\nwant %q", args, want)
@@ -117,6 +117,55 @@ func TestRunStartsClaudeWithTheTokenAlone(t *testing.T) {
 	}
 	if result.Outcome != "ok" || result.NumTurns != 12 || result.CostUSD != 0.42 || result.DurationMS != 4200 || result.Exit != 0 {
 		t.Errorf("agent.json %+v", result)
+	}
+	if got := read(t, filepath.Join(dir, "out", "agent.md")); got != "done" {
+		t.Errorf("agent.md %q, want the result's text", got)
+	}
+}
+
+// agent.md keeps the model's final text, token redacted, on an ok run and on a
+// failed one alike; the denied tool calls show in the shape line.
+func TestRunKeepsTheModelsTextAndCountsDenials(t *testing.T) {
+	dir := t.TempDir()
+	result := `{"type":"result","subtype":"success","is_error":false,"num_turns":9,"duration_ms":18000,"total_cost_usd":0.1,` +
+		`"permission_denials":[{"tool_name":"Write","tool_use_id":"a"},{"tool_name":"Write","tool_use_id":"b"},{"tool_name":"Bash","tool_use_id":"c"},{"tool_name":"Write","tool_use_id":"d"}],` +
+		`"result":"The Write tool was denied, so here is the verdict instead.\n\nThe token I saw was ` + token + `.\n"}`
+	cfg := runConfig(t, dir, "echo '"+result+"'\n")
+	var stderr bytes.Buffer
+	if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	want := "twr-claude: ok (exit 0, 9 turns, 18000 ms)\ntwr-claude: result: subtype success, is_error false, 9 turns, cost $0.1000, denied Write,Bash x4\n"
+	if stderr.String() != want {
+		t.Errorf("stderr:\n%s\nwant:\n%s", stderr.String(), want)
+	}
+	md := read(t, filepath.Join(dir, "out", "agent.md"))
+	if md != "The Write tool was denied, so here is the verdict instead.\n\nThe token I saw was <token>.\n" {
+		t.Errorf("agent.md %q", md)
+	}
+	if strings.Contains(md, token) || strings.Contains(stderr.String(), token) {
+		t.Error("the token was written")
+	}
+	if !strings.Contains(read(t, filepath.Join(dir, "out", "agent.json")), `"permission_denials": 4`) {
+		t.Errorf("agent.json %s", read(t, filepath.Join(dir, "out", "agent.json")))
+	}
+
+	// A failed run keeps its text too; a run with no result object writes none.
+	dir = t.TempDir()
+	cfg = runConfig(t, dir, `echo '{"subtype":"error_during_execution","is_error":true,"result":"it broke"}'`+"\nexit 1\n")
+	stderr.Reset()
+	Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr)
+	if got := read(t, filepath.Join(dir, "out", "agent.md")); got != "it broke" {
+		t.Errorf("agent.md %q", got)
+	}
+	if strings.Contains(read(t, filepath.Join(dir, "out", "agent.json")), "permission_denials") {
+		t.Error("agent.json carries permission_denials with none")
+	}
+	dir = t.TempDir()
+	cfg = runConfig(t, dir, "echo garbage\nexit 1\n")
+	Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr)
+	if _, err := os.Stat(filepath.Join(dir, "out", "agent.md")); err == nil {
+		t.Error("agent.md written without a result object")
 	}
 }
 

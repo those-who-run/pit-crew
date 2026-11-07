@@ -166,6 +166,41 @@ func TestHoldsAndSaysWhy(t *testing.T) {
 	}
 }
 
+// A hold keeps every file the model wrote, with the wrapper's agent.json and
+// agent.md and whatever else, not only the comment and private.md: a run that
+// wrote no verdict leaves what it said where the maintainer looks.
+func TestHoldKeepsEverythingTheModelWrote(t *testing.T) {
+	cfg := volumes(t, ladder.VerdictReady, comment(ladder.VerdictReady, "cc @someone\n\n"), "")
+	write(t, cfg.Dir, "out/agent.json", `{"outcome": "ok"}`)
+	write(t, cfg.Dir, "out/agent.md", "I reviewed it and wrote the verdict to the wrong place.\n")
+	write(t, cfg.Dir, "out/scratch.txt", "a stray file\n")
+	write(t, cfg.Dir, "out/notes/inner.md", "a directory is not copied\n")
+	g := &gh{pull: github.PullRequest{HeadSHA: head}}
+	if code := Run(t.Context(), cfg, g, logger()); code != 10 {
+		t.Fatalf("exit %d", code)
+	}
+	hold := filepath.Join(cfg.HoldDir, "ecu-31-1f0c5d2e")
+	for name, want := range map[string]string{
+		"agent.json": `{"outcome": "ok"}`, "agent.md": "I reviewed it and wrote the verdict to the wrong place.\n", "scratch.txt": "a stray file\n",
+		"comment.md": comment(ladder.VerdictReady, "cc @someone\n\n"),
+	} {
+		if got := read(t, filepath.Join(hold, name)); got != want {
+			t.Errorf("%s: %q, want %q", name, got, want)
+		}
+		if info, err := os.Stat(filepath.Join(hold, name)); err == nil && info.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %o, want 600", name, info.Mode().Perm())
+		}
+	}
+	for _, name := range []string{"reasons.md", "verdict.json"} {
+		if _, err := os.Stat(filepath.Join(hold, name)); err != nil {
+			t.Errorf("%s not held", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(hold, "notes")); err == nil {
+		t.Error("a directory was copied")
+	}
+}
+
 func TestPrivateBesideACleanCommentIsHeldAlone(t *testing.T) {
 	cfg := volumes(t, ladder.VerdictChanges, comment(ladder.VerdictChanges, "**Asked for:**\n1. x\n\n"), "one item sent privately\n")
 	g := &gh{pull: github.PullRequest{HeadSHA: head}}

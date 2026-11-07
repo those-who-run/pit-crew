@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -194,7 +195,10 @@ func Args(cfg RunConfig) []string {
 	args := []string{
 		"-p", "--restricted", "--strict-mcp-config",
 		"--permission-mode", "dontAsk", "--permission-prompts", "none",
-		"--tools", cfg.Tools,
+		// --tools is what exists for the run and --allowedTools what runs without
+		// a prompt; with dontAsk, a call outside the second list is denied, so
+		// both carry the same list.
+		"--tools", cfg.Tools, "--allowedTools", cfg.Tools,
 		"--max-turns", strconv.Itoa(cfg.MaxTurns),
 		"--output-format", "json", "--no-session-persistence",
 	}
@@ -228,13 +232,17 @@ type Result struct {
 	NumTurns   int     `json:"num_turns"`
 	DurationMS int64   `json:"duration_ms"`
 	CostUSD    float64 `json:"total_cost_usd"`
+	// PermissionDenials counts the tool calls the CLI denied; Denied names the
+	// tools, each once.
+	PermissionDenials int      `json:"permission_denials,omitempty"`
+	Denied            []string `json:"-"`
 	// Outcome is the wrapper's reading: ok, login-expired, plan-limit, max-turns,
 	// timeout or failed.
 	Outcome string `json:"outcome"`
 	// Text is the CLI's `result`, the assistant's final text or the error's
 	// message, and Errors its `errors`. Both are read with any token replaced by
-	// <token>, go on standard error when the run did not end ok, and stay out of
-	// agent.json, whose fields docs/jobs.md lists.
+	// <token>; Text goes to agent.md, both to standard error when the run did
+	// not end ok, and neither into agent.json, whose fields docs/jobs.md lists.
 	Text   string   `json:"-"`
 	Errors []string `json:"-"`
 	// TerminalReason is the CLI's `terminal_reason`, such as api_error, which
@@ -253,6 +261,9 @@ func parseResult(stdout []byte) Result {
 		Text           string   `json:"result"`
 		Errors         []string `json:"errors"`
 		TerminalReason string   `json:"terminal_reason"`
+		Denials        []struct {
+			ToolName string `json:"tool_name"`
+		} `json:"permission_denials"`
 	}
 	start := bytes.IndexByte(stdout, '{')
 	if start < 0 || json.Unmarshal(stdout[start:], &raw) != nil {
@@ -265,8 +276,17 @@ func parseResult(stdout []byte) Result {
 	for _, e := range raw.Errors {
 		result.Errors = append(result.Errors, redact(e))
 	}
+	result.PermissionDenials = len(raw.Denials)
+	for _, d := range raw.Denials {
+		if !slices.Contains(result.Denied, d.ToolName) {
+			result.Denied = append(result.Denied, d.ToolName)
+		}
+	}
 	return result
 }
+
+// textLimit bounds agent.md: the model's final text, which is prose.
+const textLimit = 64 << 10
 
 // redact replaces every token in s with <token>.
 func redact(s string) string {
@@ -295,6 +315,9 @@ func explain(w io.Writer, result Result, stdout []byte) {
 		line := fmt.Sprintf("twr-claude: result: subtype %s, is_error %t, %d turns", result.Subtype, result.IsError, result.NumTurns)
 		if result.CostUSD > 0 {
 			line += fmt.Sprintf(", cost $%.4f", result.CostUSD)
+		}
+		if result.PermissionDenials > 0 {
+			line += fmt.Sprintf(", denied %s x%d", strings.Join(result.Denied, ","), result.PermissionDenials)
 		}
 		_, _ = fmt.Fprintln(w, line)
 	}
@@ -435,6 +458,14 @@ func Run(ctx context.Context, cfg RunConfig, environ []string, stderr io.Writer)
 	if data, err := json.MarshalIndent(result, "", "  "); err == nil {
 		if err := os.WriteFile(filepath.Join(cfg.Out, "agent.json"), append(data, '\n'), 0o600); err != nil {
 			_, _ = fmt.Fprintf(stderr, "twr-claude: write agent.json: %v\n", err)
+		}
+	}
+	// The model's final text outlives the run in agent.md, whatever the outcome:
+	// a review that wrote nothing else still said something.
+	if result.Parsed {
+		text, _ := tail(result.Text, textLimit)
+		if err := os.WriteFile(filepath.Join(cfg.Out, "agent.md"), []byte(text), 0o600); err != nil {
+			_, _ = fmt.Fprintf(stderr, "twr-claude: write agent.md: %v\n", err)
 		}
 	}
 	_, _ = fmt.Fprintf(stderr, "twr-claude: %s (exit %d, %d turns, %d ms)\n", result.Outcome, exit, result.NumTurns, result.DurationMS)

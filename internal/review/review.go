@@ -111,12 +111,17 @@ func run(ctx context.Context, cfg Config, gh GitHub, logger *slog.Logger) (int, 
 		}
 		held := map[string][]byte{"private.md": files.Private}
 		if result.Outcome == publish.ReviewHold {
+			// A hold keeps everything the model wrote, agent.json and agent.md
+			// included, so a run that wrote nothing else still shows what it said.
+			if held, err = steps.ReadOutputs(cfg.Dir); err != nil {
+				return steps.ExitFailed, err
+			}
 			var reasons strings.Builder
 			fmt.Fprintf(&reasons, "Review of %s#%d at %s held.\n\n", cfg.Repo, cfg.Number, cfg.HeadSHA)
 			for _, r := range result.Refusals {
 				fmt.Fprintf(&reasons, "- %s: %s\n", r.Code, r.Detail)
 			}
-			held["reasons.md"], held["comment.md"], held["verdict.json"] = []byte(reasons.String()), files.Comment, files.Verdict
+			held["reasons.md"] = []byte(reasons.String())
 		}
 		if err := steps.Hold(dir, held); err != nil {
 			return steps.ExitFailed, err
