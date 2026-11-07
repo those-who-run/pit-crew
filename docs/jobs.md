@@ -390,9 +390,12 @@ starts again until the head moves. That is deliberate for a hold on a private
 value or a mention, which a second run would repeat. It also holds after an
 operational failure (the first Job on the maintainer's cluster held with
 `verdict-missing` because the wrapper had not granted the Write tool), where a
-second run is what is wanted. A way for the maintainer to ask for one without a
-push, a label applied by the maintainer's login newer than the held status, is
-planned; until then a held pull request is reviewed again only at its next head.
+second run is what is wanted. What is planned, and not built: a label
+`re-review` on the pull request counts only when the event that applied it is
+by the maintainer's login (as `agent-ready` does for an issue) and is newer than
+the held status; then the head counts as unreviewed and a review Job starts
+again, and the publisher removes the label when it posts. Until then a held
+pull request is reviewed again only at its next head.
 
 ### `pit-crew publish-build`
 
