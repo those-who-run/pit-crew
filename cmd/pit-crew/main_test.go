@@ -34,9 +34,42 @@ func TestUsageErrors(t *testing.T) {
 			t.Errorf("%v: exit %d", args, code)
 		}
 	}
-	var stderr bytes.Buffer
-	if code := run(t.Context(), []string{"lane"}, env(map[string]string{"LOG_LEVEL": "loud"}), strings.NewReader(""), &bytes.Buffer{}, &stderr); code != 2 || !strings.Contains(stderr.String(), "LOG_LEVEL") {
-		t.Errorf("exit %d, stderr %q", code, stderr.String())
+	for _, c := range [][2]string{{"LOG_LEVEL", "loud"}, {"LOG_FORMAT", "yaml"}} {
+		var stderr bytes.Buffer
+		if code := run(t.Context(), []string{"lane"}, env(map[string]string{c[0]: c[1]}), strings.NewReader(""), &bytes.Buffer{}, &stderr); code != 2 || !strings.Contains(stderr.String(), c[0]) {
+			t.Errorf("%s=%s: exit %d, stderr %q", c[0], c[1], code, stderr.String())
+		}
+	}
+}
+
+// LOG_FORMAT picks the handler and nothing else: the same record, at the same
+// level, comes out as a JSON object or as slog's text line.
+func TestLogFormat(t *testing.T) {
+	for _, c := range []struct {
+		format string
+		want   string
+	}{
+		{"", `{"time":`},
+		{"json", `{"time":`},
+		{"text", "time="},
+	} {
+		var out bytes.Buffer
+		logger, err := newLogger(&out, "warn", c.format)
+		if err != nil {
+			t.Fatalf("%q: %v", c.format, err)
+		}
+		logger.Info("quiet", "job", "x")
+		logger.Warn("loud", "job", "x")
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) != 1 || !strings.HasPrefix(lines[0], c.want) || !strings.Contains(lines[0], "loud") || !strings.Contains(lines[0], "WARN") {
+			t.Errorf("%q: %q", c.format, out.String())
+		}
+		if c.format == "text" && !strings.Contains(lines[0], ` msg=loud job=x`) {
+			t.Errorf("text: %q", out.String())
+		}
+		if c.format != "text" && !strings.Contains(lines[0], `"msg":"loud","job":"x"}`) {
+			t.Errorf("%q: %q", c.format, out.String())
+		}
 	}
 }
 
