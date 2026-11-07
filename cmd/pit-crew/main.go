@@ -74,7 +74,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 		flags.Usage()
 		return 2
 	}
-	logger, err := newLogger(stdout, getenv("LOG_LEVEL"))
+	logger, err := newLogger(stdout, getenv("LOG_LEVEL"), getenv("LOG_FORMAT"))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2
@@ -103,14 +103,24 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 	return code
 }
 
-func newLogger(w io.Writer, level string) (*slog.Logger, error) {
+// newLogger builds the logger from LOG_LEVEL and LOG_FORMAT: JSON lines by
+// default, slog's text form for reading a Job's log by eye.
+func newLogger(w io.Writer, level, format string) (*slog.Logger, error) {
 	var lvl slog.Level
 	if level != "" {
 		if err := lvl.UnmarshalText([]byte(level)); err != nil {
 			return nil, fmt.Errorf("LOG_LEVEL: %w", err)
 		}
 	}
-	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl})), nil
+	opts := &slog.HandlerOptions{Level: lvl}
+	switch format {
+	case "", "json":
+		return slog.New(slog.NewJSONHandler(w, opts)), nil
+	case "text":
+		return slog.New(slog.NewTextHandler(w, opts)), nil
+	default:
+		return nil, fmt.Errorf("LOG_FORMAT: %q is not json or text", format)
+	}
 }
 
 // laneCommand is the port of `python3 agent/lanes.py --repo owner/name`: the lane

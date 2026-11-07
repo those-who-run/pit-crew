@@ -56,6 +56,10 @@ type RunConfig struct {
 	Bin      string
 	// Out is where agent.json is written.
 	Out string
+	// EnvScrub sets CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, which keeps the token out
+	// of the commands the model runs. It needs bubblewrap and user namespaces,
+	// which a hardened container may not have.
+	EnvScrub bool
 }
 
 // RunConfigFromEnv reads the configuration; an unset variable takes its default
@@ -72,6 +76,7 @@ func RunConfigFromEnv(getenv func(string) string) (RunConfig, error) {
 		Out:       or(getenv("TWR_CLAUDE_OUT"), "/work/out"),
 		MaxTurns:  80,
 		Timeout:   25 * time.Minute,
+		EnvScrub:  true,
 	}
 	for _, dir := range strings.Split(or(getenv("TWR_CLAUDE_ADD_DIRS"), "/work/data,/work/agent,/work/out"), ",") {
 		if dir = strings.TrimSpace(dir); dir != "" {
@@ -94,6 +99,13 @@ func RunConfigFromEnv(getenv func(string) string) (RunConfig, error) {
 			return cfg, fmt.Errorf("TWR_CLAUDE_TIMEOUT: %q is not a duration", v)
 		}
 		cfg.Timeout = d
+	}
+	switch v := strings.ToLower(getenv("TWR_CLAUDE_ENV_SCRUB")); v {
+	case "", "1", "true", "yes":
+	case "0", "false", "no":
+		cfg.EnvScrub = false
+	default:
+		return cfg, fmt.Errorf("TWR_CLAUDE_ENV_SCRUB: %q is not 1 or 0", v)
 	}
 	return cfg, nil
 }
@@ -139,8 +151,9 @@ func GitHubTokenIn(environ []string) string {
 
 // childEnv is the environment the claude process gets: the step's, less what is
 // cleared, plus the token and the switches that keep the run quiet and the token
-// out of the commands the model runs.
-func childEnv(environ []string, token, home string) []string {
+// out of the commands the model runs. The scrub is always set, on or off, so the
+// CLI's own default never decides.
+func childEnv(environ []string, token, home string, scrub bool) []string {
 	var env []string
 	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
@@ -149,9 +162,13 @@ func childEnv(environ []string, token, home string) []string {
 		}
 		env = append(env, kv)
 	}
+	scrubValue := "0"
+	if scrub {
+		scrubValue = "1"
+	}
 	return append(env,
 		"CLAUDE_CODE_OAUTH_TOKEN="+token,
-		"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1",
+		"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB="+scrubValue,
 		"DISABLE_AUTOUPDATER=1",
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		"CLAUDE_CONFIG_DIR="+filepath.Join(home, ".claude"),
@@ -169,7 +186,7 @@ func cleared(name string) bool {
 			return true
 		}
 	}
-	return name == "CLAUDE_CODE_OAUTH_TOKEN" || name == "CLAUDE_CONFIG_DIR"
+	return name == "CLAUDE_CODE_OAUTH_TOKEN" || name == "CLAUDE_CONFIG_DIR" || name == "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"
 }
 
 // Args is the claude command line for a run, without the binary.
@@ -285,11 +302,14 @@ func Run(ctx context.Context, cfg RunConfig, environ []string, stderr io.Writer)
 			home = v
 		}
 	}
+	if !cfg.EnvScrub {
+		_, _ = fmt.Fprintln(stderr, "twr-claude: subprocess env scrub is off (TWR_CLAUDE_ENV_SCRUB=0): commands the model runs can read its environment, including the token")
+	}
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, cfg.Bin, Args(cfg)...) //nolint:gosec // the binary and the arguments are the wrapper's own
 	cmd.Dir = cfg.WorkDir
-	cmd.Env = childEnv(environ, tokenText, home)
+	cmd.Env = childEnv(environ, tokenText, home, cfg.EnvScrub)
 	// Once the time limit kills claude, a child it left holding the output is not
 	// waited for.
 	cmd.WaitDelay = 2 * time.Second

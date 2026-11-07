@@ -48,6 +48,17 @@ with the brief and the task statement as the prompt on standard input. It refuse
 to start at all if a GitHub token variable is set: the model's step never holds a
 write credential, and this is where that is enforced.
 
+`TWR_CLAUDE_ENV_SCRUB` (`1` by default) decides what `run` sets
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` to, and `run` always sets it, so the CLI's own
+default never decides. On, the CLI strips the token from the environment of the
+commands the model runs; that needs bubblewrap and user namespaces, which the
+runner image and the Job's seccomp profile do not give it, so the CLI refused to
+start on the first Job. With `TWR_CLAUDE_ENV_SCRUB=0` the CLI starts without
+that isolation, and `run` says so once on standard error before starting:
+`twr-claude: subprocess env scrub is off (TWR_CLAUDE_ENV_SCRUB=0): commands the
+model runs can read its environment, including the token`. A value that is not
+`1`, `true`, `yes`, `0`, `false` or `no` is a configuration error (exit 2).
+
 Exit codes: 0 the run finished; 2 configuration; 3 refused to start; 70 the login
 has expired or the token is invalid; 75 the plan's usage limit was reached; 71 the
 turn limit; 72 the time limit; 1 the run failed otherwise. The poller backs off on
@@ -83,8 +94,12 @@ official documentation on 2026-11-06:
   exit codes 70 and 75.
 - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` strips credentials from the environment
   of the commands the model runs (documentation). Whether it strips
-  `CLAUDE_CODE_OAUTH_TOKEN` by name is not stated; the first real run checks
-  that `env` run by the model does not show the token.
+  `CLAUDE_CODE_OAUTH_TOKEN` by name is not stated; a run with the scrub on checks
+  that `env` run by the model does not show the token. Seen on the first Job:
+  with it on and no bubblewrap, the CLI exits at once with `Claude Code could not
+  start: bubblewrap is required for subprocess env scrubbing and isolation`, and
+  its message names `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` as the way to disable
+  it, which `TWR_CLAUDE_ENV_SCRUB=0` sets.
 - Claude Code with a subscription token needs `api.anthropic.com`,
   `platform.claude.com` and `claude.ai` (the network documentation).
 

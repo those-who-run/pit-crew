@@ -164,14 +164,7 @@ const (
 func (c Config) git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // the arguments are the step's own: refs and paths it checked
 	cmd.Dir = dir
-	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	if c.Token != "" {
-		// What `gh` and actions/checkout do: a basic header for the API host, set
-		// through the environment, so .git/config never holds it.
-		header := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+c.Token))
-		env = append(env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http."+c.GitBase+".extraheader", "GIT_CONFIG_VALUE_0="+header)
-	}
-	cmd.Env = env
+	cmd.Env = append(os.Environ(), c.gitEnv()...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -179,6 +172,29 @@ func (c Config) git(ctx context.Context, dir string, args ...string) ([]byte, er
 		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
+}
+
+// gitEnv is the configuration every git command gets through the environment
+// (GIT_CONFIG_COUNT and its numbered pairs), so .git/config never holds it: the
+// token as a basic header for the API host, what `gh` and actions/checkout do,
+// and the repository and agent directories as safe. Those are the volumes'
+// mount points, owned by root, and a clone keeps an existing directory as the
+// repository root, so git as the step's own user would refuse them otherwise.
+func (c Config) gitEnv() []string {
+	pairs := [][2]string{
+		{"safe.directory", filepath.Join(c.Dir, RepoDir)},
+		{"safe.directory", filepath.Join(c.Dir, AgentDir)},
+	}
+	if c.Token != "" {
+		header := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+c.Token))
+		pairs = append(pairs, [2]string{"http." + c.GitBase + ".extraheader", header})
+	}
+	env := []string{"GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_COUNT=" + strconv.Itoa(len(pairs))}
+	for i, pair := range pairs {
+		n := strconv.Itoa(i)
+		env = append(env, "GIT_CONFIG_KEY_"+n+"="+pair[0], "GIT_CONFIG_VALUE_"+n+"="+pair[1])
+	}
+	return env
 }
 
 func (c Config) url(repo string) string { return c.GitBase + repo + ".git" }

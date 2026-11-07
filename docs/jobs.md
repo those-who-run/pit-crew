@@ -51,6 +51,18 @@ image has not been built: it installs several toolchains, and the night's load
 rules allowed no container build that is not small. CI's `runner / build` is its
 first build.
 
+Both images set `GIT_CONFIG_GLOBAL=/etc/pit-crew/gitconfig`, a file they ship
+that marks `/work/repo` and `/work/agent` as `safe.directory`. The two are
+emptyDir mount points, owned by root, and `git clone` into an existing directory
+keeps it as the repository root, so git running as 65532 refused them on the
+first Job (`fatal: detected dubious ownership in repository at '/work/agent'`).
+`pit-crew fetch` also passes the same two entries to its own git commands through
+the environment, so its clones work whatever the image's configuration; the file
+is for every git the agent and publish steps run after it. A manifest that
+mounted its own gitconfig ConfigMap at that path and set `GIT_CONFIG_GLOBAL` as an
+interim can drop both once it runs these images. Both images also set
+`GIT_CONFIG_NOSYSTEM=1`, so git reads this one file and never `/etc/gitconfig`.
+
 ## Volumes
 
 All emptyDir, created per Job, sized with `sizeLimit`.
@@ -90,6 +102,7 @@ Every `pit-crew` step reads these.
 | Variable | Default | Meaning |
 |---|---|---|
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `LOG_FORMAT` | `json` | `json` (one object per line) or `text` (slog's `key=value` form, for reading a Job's log by eye); the same records either way |
 | `GITHUB_API_URL` | `https://api.github.com` | The API |
 | `APP_CLIENT_ID` | (required where a token is minted) | The App's client ID |
 | `APP_KEY_FILE` | (required) | The App's private key, PEM |
@@ -298,6 +311,7 @@ command line is fixed by the wrapper; the manifest sets the environment.
 | `TWR_CLAUDE_MODEL` | (the CLI's default) | `--model` |
 | `TWR_CLAUDE_TIMEOUT` | `25m` | Wall-clock limit on the `claude` process |
 | `TWR_CLAUDE_BIN` | `claude` | The CLI |
+| `TWR_CLAUDE_ENV_SCRUB` | `1` | `1` (or `true`, `yes`) sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` for the CLI, which keeps the token out of the commands the model runs; `0` (or `false`, `no`) sets it to `0`. Anything else is a configuration error. See below for when it must be `0` |
 | `HOME` | `/home/agent` | Must be writable: the CLI keeps its state there |
 
 It starts `claude -p --restricted --strict-mcp-config --permission-mode dontAsk
@@ -305,10 +319,24 @@ It starts `claude -p --restricted --strict-mcp-config --permission-mode dontAsk
 --no-session-persistence --add-dir ...` with the prompt on standard input, the
 token as `CLAUDE_CODE_OAUTH_TOKEN` in that process's environment only, and
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, every `GH_*`/`GITHUB_*` token and the
-cloud-provider switches cleared. It sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`,
-`DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and
+cloud-provider switches cleared. It sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` to `1`
+or `0` from `TWR_CLAUDE_ENV_SCRUB` (always set, so the CLI's own default never
+decides), `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and
 `CLAUDE_CONFIG_DIR=$HOME/.claude`. It writes `/work/out/agent.json` with the
 result's `subtype`, `num_turns`, `duration_ms`, `total_cost_usd` and `is_error`.
+
+The scrub needs bubblewrap, and bubblewrap needs user namespaces. The runner
+image has no bubblewrap, and the Job's `RuntimeDefault` seccomp profile denies
+user namespaces to a container without `CAP_SYS_ADMIN`, so installing it would
+not help: with the scrub on, the first Job's agent container stopped at once with
+`Claude Code could not start: bubblewrap is required for subprocess env scrubbing
+and isolation`. The manifest sets `TWR_CLAUDE_ENV_SCRUB=0` for now, and `run`
+then logs one line before starting: `twr-claude: subprocess env scrub is off
+(TWR_CLAUDE_ENV_SCRUB=0): commands the model runs can read its environment,
+including the token`. With it off, a command the model runs can read the token;
+what still bounds that is the NetworkPolicies' egress limits on the agent
+container, and that the token can be rotated at any time with `twr-claude
+login`.
 
 Exit codes: 0 the run finished (whatever the model concluded); 2 configuration;
 3 refused to start (a GitHub token in the environment); 70 login expired or
@@ -439,7 +467,12 @@ session. The first run, with `POLL_START_JOBS=false` first, must show:
    accepted by the installed version (`--max-turns` is in the documentation but not
    in the local `--help` of 2.1.319).
 5. A command the model runs (`env`, `cat /proc/self/environ`) does not show the
-   token, with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`.
+   token, with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. With the scrub off
+   (`TWR_CLAUDE_ENV_SCRUB=0`, which the first Job needed: the runner image has no
+   bubblewrap and the seccomp profile denies it user namespaces) this cannot
+   hold, and the run must not be read as proving it. The controls that remain
+   are the NetworkPolicies' egress limits on the agent container (item 8) and
+   rotating the token with `twr-claude login`.
 6. A revoked token exits 70 and shows in the heartbeat as `login_expired_until`;
    a usage-limit refusal exits 75 and backs the poller off.
 7. `publish-review` posts one comment per head with the marker and sets
