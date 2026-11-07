@@ -51,13 +51,23 @@ the `claude` process only, and starts:
 
 ```
 claude -p --restricted --strict-mcp-config --permission-mode dontAsk \
-  --permission-prompts none --tools <list> --max-turns <n> \
-  --output-format json --no-session-persistence --add-dir <dirs>
+  --permission-prompts none --tools <list> --allowedTools <list> \
+  --max-turns <n> --output-format json --no-session-persistence --add-dir <dirs>
 ```
 
 with the brief and the task statement as the prompt on standard input. It refuses
 to start at all if a GitHub token variable is set: the model's step never holds a
 write credential, and this is where that is enforced.
+
+`--tools` and `--allowedTools` carry the same list. `--tools` says which tools
+exist for the run; `--allowedTools` says which run without a prompt, and
+`--permission-mode dontAsk` denies, rather than asks, any call that would need
+one. Seen on the maintainer's machine with the wrapper's flags: without
+`--allowedTools` the result had `permission_denials: ["Write"]` and the text
+"The Write tool was denied ... don't-ask mode blocked the call", so a run ended
+`ok` after 9 turns with nothing in `/work/out`; with it the file was written and
+Bash ran, `permission_denials` empty. `dontAsk` stays so anything outside the
+list is denied, not prompted for.
 
 `TWR_CLAUDE_ENV_SCRUB` (`1` by default) decides what `run` sets
 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` to, and `run` always sets it, so the CLI's own
@@ -74,6 +84,23 @@ Exit codes: 0 the run finished; 2 configuration; 3 refused to start; 70 the logi
 has expired or the token is invalid; 75 the plan's usage limit was reached; 71 the
 turn limit; 72 the time limit; 1 the run failed otherwise. The poller backs off on
 70 and 75.
+
+What `run` writes: `agent.json`, its summary of the run, and, on every run that
+produced a result object, `agent.md`, the model's final text (the result's
+`result` field, any token replaced by `<token>`, the last 64 KiB of it if
+longer), so a review that wrote nothing else still leaves what it said.
+
+What `run` prints: the CLI's standard error as it arrives, then its own summary,
+`twr-claude: <outcome> (exit <n>, <n> turns, <n> ms)`, then one line with the
+result's shape, `twr-claude: result: subtype <s>, is_error <b>, <n> turns, cost
+$<usd>, denied <tools> x<n>` (the cost when the result has one; the denied
+tool calls, the distinct tool names and their count, when there were any).
+When the outcome is not `ok` it also prints why, since the Job's `out`
+directory dies with the pod before anyone reads `agent.json`: the result's
+`result` text and `errors`, the last 2000 characters of each, with any token in
+them replaced by `<token>`; or, when standard output holds no result object at
+all, its last 2000 characters, labelled as such and redacted the same way. The
+CLI's standard error is not repeated: it was forwarded as it was written.
 
 ## What was checked, and what was not
 
@@ -94,7 +121,9 @@ official documentation on 2026-11-06:
   says it denies every call that would prompt. `--permission-prompts none` is in
   the local help and denies anything that would prompt in print mode.
 - `--tools` takes a comma-separated list of built-in tool names (local help and
-  documentation).
+  documentation). `--allowedTools` (`--allowed-tools` too, in the local help)
+  takes the same shape of list; without it, `dontAsk` denied `Write` and `Bash`
+  on the maintainer's machine, as above.
 - `--output-format json` gives one result object with `subtype`, `is_error`,
   `num_turns`, `duration_ms` and `total_cost_usd` (documentation of the SDK's
   result message; the CLI's own page says less).
@@ -102,7 +131,13 @@ official documentation on 2026-11-06:
   "OAuth token revoked", "OAuth token has expired", "Invalid authentication
   credentials", 401) and for the usage limit ("You've hit your session limit",
   "weekly limit", "Opus limit", "Request rejected (429)") are what `run` maps to
-  exit codes 70 and 75.
+  exit codes 70 and 75. Seen with the runner image and a bogus token: the CLI
+  exits 1 after one turn with a result of subtype `success`, `is_error` true,
+  `terminal_reason` `api_error` and the text `Failed to authenticate. API
+  Error: 401 OAuth access token is invalid.`, and nothing on standard error; so
+  "Failed to authenticate", "OAuth access token is invalid" and `api_error`
+  with a 401 in the result text are exit 70 too. A 401 in the text of a result
+  that ended ok (the model ran `curl` against something) stays 0.
 - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` strips credentials from the environment
   of the commands the model runs (documentation). Whether it strips
   `CLAUDE_CODE_OAUTH_TOKEN` by name is not stated; a run with the scrub on checks

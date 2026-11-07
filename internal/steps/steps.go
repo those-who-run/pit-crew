@@ -73,6 +73,29 @@ func ReadOutput(dir, name string) ([]byte, error) {
 	return data, err
 }
 
+// ReadOutputs reads every regular file in the model's output directory, by
+// name: what a hold keeps, so the maintainer sees all the model wrote.
+// Directories and anything else are left alone.
+func ReadOutputs(dir string) (map[string][]byte, error) {
+	out := filepath.Join(dir, fetch.OutDir)
+	entries, err := os.ReadDir(out)
+	if err != nil {
+		return nil, err
+	}
+	files := map[string][]byte{}
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(out, e.Name())) //nolint:gosec // the output volume, a name the directory listing gave
+		if err != nil {
+			return nil, err
+		}
+		files[e.Name()] = data
+	}
+	return files, nil
+}
+
 var unsafeRE = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // HoldDir makes the folder for one held unit under root and returns it.

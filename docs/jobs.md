@@ -306,7 +306,7 @@ command line is fixed by the wrapper; the manifest sets the environment.
 | `TWR_CLAUDE_TASK` | `/work/data/task.md` | The task statement, appended to the brief as the prompt |
 | `TWR_CLAUDE_WORKDIR` | `/work/repo` | Where `claude` runs |
 | `TWR_CLAUDE_ADD_DIRS` | `/work/data,/work/agent,/work/out` | Directories the file tools may reach besides the working directory |
-| `TWR_CLAUDE_TOOLS` | `Read,Grep,Glob,Write,Bash` | The `--tools` list |
+| `TWR_CLAUDE_TOOLS` | `Read,Grep,Glob,Write,Bash` | The `--tools` list, given to `--allowedTools` as well |
 | `TWR_CLAUDE_MAX_TURNS` | `80` | The turn limit |
 | `TWR_CLAUDE_MODEL` | (the CLI's default) | `--model` |
 | `TWR_CLAUDE_TIMEOUT` | `25m` | Wall-clock limit on the `claude` process |
@@ -315,15 +315,19 @@ command line is fixed by the wrapper; the manifest sets the environment.
 | `HOME` | `/home/agent` | Must be writable: the CLI keeps its state there |
 
 It starts `claude -p --restricted --strict-mcp-config --permission-mode dontAsk
---permission-prompts none --tools <list> --max-turns <n> --output-format json
---no-session-persistence --add-dir ...` with the prompt on standard input, the
+--permission-prompts none --tools <list> --allowedTools <list> --max-turns <n>
+--output-format json --no-session-persistence --add-dir ...` with the prompt on
+standard input, the
 token as `CLAUDE_CODE_OAUTH_TOKEN` in that process's environment only, and
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, every `GH_*`/`GITHUB_*` token and the
 cloud-provider switches cleared. It sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` to `1`
 or `0` from `TWR_CLAUDE_ENV_SCRUB` (always set, so the CLI's own default never
 decides), `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and
 `CLAUDE_CONFIG_DIR=$HOME/.claude`. It writes `/work/out/agent.json` with the
-result's `subtype`, `num_turns`, `duration_ms`, `total_cost_usd` and `is_error`.
+result's `subtype`, `num_turns`, `duration_ms`, `total_cost_usd` and `is_error`,
+and `permission_denials` (an integer, the tool calls the CLI denied) when there
+were any; and `/work/out/agent.md`, the model's final text, whenever the CLI
+produced a result object.
 
 The scrub needs bubblewrap, and bubblewrap needs user namespaces. The runner
 image has no bubblewrap, and the Job's `RuntimeDefault` seccomp profile denies
@@ -354,7 +358,8 @@ what was not.
 | build | `pr-title.txt` (one line, a Conventional Commit), `pr-body.md` (the template as `twr-pr-ready` writes it, ending with the issue line); the commits are on the branch in `/work/repo` |
 | fix | `answer.md` (as `twr-fix-review` writes it, without a marker); `pr-body.md` only when the evidence table changed; the commits on the branch |
 
-`twr-claude run` adds `agent.json`, its own summary of the run.
+`twr-claude run` adds `agent.json`, its own summary of the run, and `agent.md`,
+the model's final text.
 
 ## The publish steps
 
@@ -364,14 +369,17 @@ what was not.
 |---|---|---|
 | `PUBLISH_REPO`, `PUBLISH_NUMBER`, `PUBLISH_HEAD_SHA` | (required) | The same values the Job gave `fetch`; cross-checked against `task.json` |
 | `PUBLISH_DIR` | `/work` | |
-| `PUBLISH_HOLD_DIR` | (required) | Where held comments and `private.md` go |
+| `PUBLISH_HOLD_DIR` | (required) | Where a held run's output and `private.md` go |
 | `PUBLISH_ALLOW_FILE` | (none) | Optional: more public hosts, in paddock's `private_scan.allow` format. Unset means the built-in allowlist alone |
 | `PUBLISH_PATTERNS_FILE` | (none) | Optional: the lab's own patterns, `name regexp` per line. Unset means no extra patterns. A path that is set but missing or unreadable, or a line that does not parse, is a configuration failure (exit 2): nothing is posted |
 
 Reads `/work/out/verdict.json`, `comment.md` and `private.md`. If the head moved:
 exit 11, nothing posted. If the output fails a check: nothing of the model's is
-posted, the files and the reasons go to `/hold/<repo>-<number>-<sha8>/`, the status
-`review / verdict` is set to `error` with `held: <codes>`, exit 10. Otherwise:
+posted, every regular file in `/work/out` (`agent.json` and `agent.md` among
+them, so a run that wrote no verdict still shows what it said) is copied with
+its name, mode 0600, to `/hold/<repo>-<number>-<sha8>/` beside `reasons.md`, the
+status `review / verdict` is set to `error` with `held: <codes>`, exit 10.
+Otherwise:
 the comment is created, or updated when the reviewer already commented on this
 head, ending in the marker with the verdict; `review / verdict` is set; exit 0.
 `private.md`, when present, always goes to the hold directory and never to GitHub.

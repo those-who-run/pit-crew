@@ -84,7 +84,7 @@ func TestRunStartsClaudeWithTheTokenAlone(t *testing.T) {
 	}
 	args := strings.Split(strings.TrimSpace(read(t, filepath.Join(dir, "claude.args"))), "\n")
 	want := []string{"-p", "--restricted", "--strict-mcp-config", "--permission-mode", "dontAsk", "--permission-prompts", "none",
-		"--tools", "Read,Grep,Glob,Write,Bash", "--max-turns", "80", "--output-format", "json", "--no-session-persistence",
+		"--tools", "Read,Grep,Glob,Write,Bash", "--allowedTools", "Read,Grep,Glob,Write,Bash", "--max-turns", "80", "--output-format", "json", "--no-session-persistence",
 		"--model", "opus", "--add-dir", "/work/data", "--add-dir", "/work/out"}
 	if !reflect.DeepEqual(args, want) {
 		t.Errorf("args %q\nwant %q", args, want)
@@ -117,6 +117,57 @@ func TestRunStartsClaudeWithTheTokenAlone(t *testing.T) {
 	}
 	if result.Outcome != "ok" || result.NumTurns != 12 || result.CostUSD != 0.42 || result.DurationMS != 4200 || result.Exit != 0 {
 		t.Errorf("agent.json %+v", result)
+	}
+	if got := read(t, filepath.Join(dir, "out", "agent.md")); got != "done" {
+		t.Errorf("agent.md %q, want the result's text", got)
+	}
+}
+
+// agent.md keeps the model's final text, token redacted, on an ok run and on a
+// failed one alike; the denied tool calls show in the shape line.
+func TestRunKeepsTheModelsTextAndCountsDenials(t *testing.T) {
+	dir := t.TempDir()
+	result := `{"type":"result","subtype":"success","is_error":false,"num_turns":9,"duration_ms":18000,"total_cost_usd":0.1,` +
+		`"permission_denials":[{"tool_name":"Write","tool_use_id":"a"},{"tool_name":"Write","tool_use_id":"b"},{"tool_name":"Bash","tool_use_id":"c"},{"tool_name":"Write","tool_use_id":"d"}],` +
+		`"result":"The Write tool was denied, so here is the verdict instead.\n\nThe token I saw was ` + token + `.\n"}`
+	// printf, not echo: the text's \n escapes must reach the wrapper as written,
+	// and dash's echo (/bin/sh on Debian and Ubuntu) turns them into newlines.
+	cfg := runConfig(t, dir, "printf '%s\\n' '"+result+"'\n")
+	var stderr bytes.Buffer
+	if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	want := "twr-claude: ok (exit 0, 9 turns, 18000 ms)\ntwr-claude: result: subtype success, is_error false, 9 turns, cost $0.1000, denied Write,Bash x4\n"
+	if stderr.String() != want {
+		t.Errorf("stderr:\n%s\nwant:\n%s", stderr.String(), want)
+	}
+	md := read(t, filepath.Join(dir, "out", "agent.md"))
+	if md != "The Write tool was denied, so here is the verdict instead.\n\nThe token I saw was <token>.\n" {
+		t.Errorf("agent.md %q", md)
+	}
+	if strings.Contains(md, token) || strings.Contains(stderr.String(), token) {
+		t.Error("the token was written")
+	}
+	if !strings.Contains(read(t, filepath.Join(dir, "out", "agent.json")), `"permission_denials": 4`) {
+		t.Errorf("agent.json %s", read(t, filepath.Join(dir, "out", "agent.json")))
+	}
+
+	// A failed run keeps its text too; a run with no result object writes none.
+	dir = t.TempDir()
+	cfg = runConfig(t, dir, `echo '{"subtype":"error_during_execution","is_error":true,"result":"it broke"}'`+"\nexit 1\n")
+	stderr.Reset()
+	Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr)
+	if got := read(t, filepath.Join(dir, "out", "agent.md")); got != "it broke" {
+		t.Errorf("agent.md %q", got)
+	}
+	if strings.Contains(read(t, filepath.Join(dir, "out", "agent.json")), "permission_denials") {
+		t.Error("agent.json carries permission_denials with none")
+	}
+	dir = t.TempDir()
+	cfg = runConfig(t, dir, "echo garbage\nexit 1\n")
+	Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr)
+	if _, err := os.Stat(filepath.Join(dir, "out", "agent.md")); err == nil {
+		t.Error("agent.md written without a result object")
 	}
 }
 
@@ -178,6 +229,12 @@ func TestRunOutcomes(t *testing.T) {
 		{"an error result with exit 0", `echo '{"type":"result","subtype":"error_during_execution","is_error":true}'` + "\n", ExitFailed, "failed"},
 		{"a plain failure", "echo nope >&2\nexit 1\n", ExitFailed, "failed"},
 		{"the result's own text does not fool it", `echo '{"type":"result","subtype":"success","is_error":false,"result":"line 401 and 429 are fine"}'` + "\n", ExitOK, "ok"},
+		// What a bogus token gives with the runner image: subtype success, one turn,
+		// nothing on standard error.
+		{"a rejected token, exit 1", `echo '{"subtype":"success","is_error":true,"num_turns":1,"terminal_reason":"api_error","result":"Failed to authenticate. API Error: 401 OAuth access token is invalid."}'` + "\nexit 1\n", ExitLoginExpired, "login-expired"},
+		{"api_error with a 401 alone", `echo '{"subtype":"success","is_error":true,"num_turns":1,"terminal_reason":"api_error","result":"API Error: 401 Unauthorized"}'` + "\nexit 1\n", ExitLoginExpired, "login-expired"},
+		{"a 401 from a curl the model ran, in an ok result", `echo '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"curl returned HTTP 401 Unauthorized; failed to authenticate against the test server, as the task expected. OAuth access token is invalid there by design."}'` + "\n", ExitOK, "ok"},
+		{"a 401 from a curl the model ran, in a result that failed otherwise", `echo '{"subtype":"error_during_execution","is_error":true,"num_turns":3,"result":"curl returned HTTP 401 from the test server, then the build broke"}'` + "\nexit 1\n", ExitFailed, "failed"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -191,6 +248,100 @@ func TestRunOutcomes(t *testing.T) {
 				t.Errorf("agent.json %s", read(t, filepath.Join(dir, "out", "agent.json")))
 			}
 		})
+	}
+}
+
+// A run that did not end ok says why on standard error, after the summary: the
+// result's subtype, is_error and text, with any token the model echoed replaced
+// by <token>; it is the one place the reason survives the pod.
+func TestRunSaysWhyItFailed(t *testing.T) {
+	dir := t.TempDir()
+	result := `{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1,"duration_ms":2215,` +
+		`"result":"Bash failed: env printed CLAUDE_CODE_OAUTH_TOKEN=` + token + ` and git refused the push","errors":["the model stopped: ` + token + `"]}`
+	cfg := runConfig(t, dir, "echo '"+result+"'\nexit 1\n")
+	var stderr bytes.Buffer
+	if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr); code != ExitFailed {
+		t.Errorf("exit %d, want %d", code, ExitFailed)
+	}
+	out := stderr.String()
+	want := "twr-claude: failed (exit 1, 1 turns, 2215 ms)\n" +
+		"twr-claude: result: subtype error_during_execution, is_error true, 1 turns\n" +
+		"twr-claude: result text:\nBash failed: env printed CLAUDE_CODE_OAUTH_TOKEN=<token> and git refused the push\n" +
+		"twr-claude: result error: the model stopped: <token>\n"
+	if out != want {
+		t.Errorf("stderr:\n%s\nwant:\n%s", out, want)
+	}
+	if strings.Contains(out, token) {
+		t.Error("the token was printed")
+	}
+	if strings.Contains(read(t, filepath.Join(dir, "out", "agent.json")), "Bash failed") {
+		t.Error("agent.json carries the result's text, which docs/jobs.md does not list")
+	}
+}
+
+// The text is bounded: a long one shows its end, labelled.
+func TestRunBoundsTheReason(t *testing.T) {
+	dir := t.TempDir()
+	long := strings.Repeat("x", 3000) + "the end"
+	cfg := runConfig(t, dir, `echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"`+long+`"}'`+"\nexit 1\n")
+	var stderr bytes.Buffer
+	Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr)
+	out := stderr.String()
+	_, after, ok := strings.Cut(out, "twr-claude: result text (last 2000 characters):\n")
+	if !ok {
+		t.Fatalf("stderr %q: no bounded text", out)
+	}
+	if after != strings.Repeat("x", 2000-len("the end"))+"the end\n" {
+		t.Errorf("the tail is %d characters: %q", len(after), after)
+	}
+}
+
+// When standard output is not a result object at all, its end is shown as such,
+// with any token in it redacted; when it is empty, that is said instead.
+func TestRunShowsRawOutputWithoutAResult(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runConfig(t, dir, "echo 'node: segmentation fault near "+token+"'\necho 'core dumped'\nexit 139\n")
+	var stderr bytes.Buffer
+	if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr); code != ExitFailed {
+		t.Errorf("exit %d, want %d", code, ExitFailed)
+	}
+	out := stderr.String()
+	want := "twr-claude: no result object on standard output; what is there:\nnode: segmentation fault near <token>\ncore dumped\n"
+	if !strings.HasSuffix(out, want) {
+		t.Errorf("stderr:\n%s\nwant it to end with:\n%s", out, want)
+	}
+	if strings.Contains(out, token) || strings.Contains(out, "result: subtype") {
+		t.Errorf("stderr:\n%s", out)
+	}
+
+	dir = t.TempDir()
+	cfg = runConfig(t, dir, "exit 1\n")
+	stderr.Reset()
+	Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr)
+	if !strings.HasSuffix(stderr.String(), "twr-claude: no result object on standard output, and nothing else there\n") {
+		t.Errorf("stderr %q", stderr.String())
+	}
+
+	dir = t.TempDir()
+	cfg = runConfig(t, dir, `echo '{"type":"result","subtype":"error_during_execution","is_error":true}'`+"\nexit 1\n")
+	stderr.Reset()
+	Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr)
+	if !strings.HasSuffix(stderr.String(), "is_error true, 0 turns\ntwr-claude: the result carries no text\n") {
+		t.Errorf("stderr %q", stderr.String())
+	}
+}
+
+// A run that ended ok shows its shape in one line, and nothing more.
+func TestRunShowsTheShapeOfAnOkRun(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runConfig(t, dir, "echo '"+okResult+"'\n")
+	var stderr bytes.Buffer
+	if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	want := "twr-claude: ok (exit 0, 12 turns, 4200 ms)\ntwr-claude: result: subtype success, is_error false, 12 turns, cost $0.4200\n"
+	if stderr.String() != want {
+		t.Errorf("stderr:\n%s\nwant:\n%s", stderr.String(), want)
 	}
 }
 

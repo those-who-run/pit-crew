@@ -68,6 +68,30 @@ func TestTaskAndOutput(t *testing.T) {
 	}
 }
 
+func TestReadOutputs(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := ReadOutputs(dir); err == nil {
+		t.Error("no error without an out directory")
+	}
+	write(t, dir, "out/verdict.json", "{}")
+	write(t, dir, "out/agent.md", "I found nothing to say.")
+	write(t, dir, "out/notes.txt", "stray")
+	write(t, dir, "out/sub/inner.md", "not a regular file of out")
+	files, err := ReadOutputs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"verdict.json": "{}", "agent.md": "I found nothing to say.", "notes.txt": "stray"}
+	if len(files) != len(want) {
+		t.Errorf("files %v, want %v", files, want)
+	}
+	for name, text := range want {
+		if string(files[name]) != text {
+			t.Errorf("%s: %q, want %q", name, files[name], text)
+		}
+	}
+}
+
 func TestHold(t *testing.T) {
 	root := t.TempDir()
 	if _, err := HoldDir("", "those-who-run/ecu", 31, "abc"); err == nil {
