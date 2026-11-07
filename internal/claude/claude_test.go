@@ -130,7 +130,9 @@ func TestRunKeepsTheModelsTextAndCountsDenials(t *testing.T) {
 	result := `{"type":"result","subtype":"success","is_error":false,"num_turns":9,"duration_ms":18000,"total_cost_usd":0.1,` +
 		`"permission_denials":[{"tool_name":"Write","tool_use_id":"a"},{"tool_name":"Write","tool_use_id":"b"},{"tool_name":"Bash","tool_use_id":"c"},{"tool_name":"Write","tool_use_id":"d"}],` +
 		`"result":"The Write tool was denied, so here is the verdict instead.\n\nThe token I saw was ` + token + `.\n"}`
-	cfg := runConfig(t, dir, "echo '"+result+"'\n")
+	// printf, not echo: the text's \n escapes must reach the wrapper as written,
+	// and dash's echo (/bin/sh on Debian and Ubuntu) turns them into newlines.
+	cfg := runConfig(t, dir, "printf '%s\\n' '"+result+"'\n")
 	var stderr bytes.Buffer
 	if code := Run(t.Context(), cfg, []string{"STUB_DIR=" + dir}, &stderr); code != ExitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
