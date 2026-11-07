@@ -491,7 +491,13 @@ func reviewUnit(c Candidate) unit {
 	if len(short) > 8 {
 		short = short[:8]
 	}
-	return unit{kind: "review", name: fmt.Sprintf("review-%s-%d-%s-f%d", repoSlug(c.Pull.Repo), c.Pull.Number, short, c.Rounds), values: pullValues(c.Pull)}
+	name := fmt.Sprintf("review-%s-%d-%s-f%d", repoSlug(c.Pull.Repo), c.Pull.Number, short, c.Rounds)
+	if c.Decision.Reason == "re-review" {
+		// The first review's Job at this head is still there for its TTL, so the
+		// ask gets a name of its own.
+		name += fmt.Sprintf("-a%d", c.ReReviews)
+	}
+	return unit{kind: "review", name: name, values: pullValues(c.Pull)}
 }
 
 func fixUnit(c Candidate) unit {

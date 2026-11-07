@@ -283,6 +283,11 @@ func (c *Client) patch(ctx context.Context, path string, body any) error {
 	return err
 }
 
+func (c *Client) delete(ctx context.Context, path string) error {
+	_, _, err := c.do(ctx, http.MethodDelete, path, nil)
+	return err
+}
+
 // WaitForNetwork makes one cheap, unauthenticated-safe call, with retries, so a
 // step that starts before the pod's network is up waits for it rather than failing
 // its first real request.

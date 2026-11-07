@@ -108,7 +108,7 @@ Every `pit-crew` step reads these.
 | `APP_KEY_FILE` | (required) | The App's private key, PEM |
 | `APP_INSTALLATION_ID` | (looked up) | The installation on the organisation |
 | `LADDER_OWNER` | `those-who-run` | The organisation |
-| `LADDER_MAINTAINER` | (empty: nobody) | The maintainer's login; only his label starts a build |
+| `LADDER_MAINTAINER` | (empty: nobody) | The maintainer's login; only his label starts a build or asks for a review again |
 | `LADDER_REVIEWER` | `twr-reviewer[bot]` | The review poster's login; its markers and statuses count |
 | `LADDER_BUILDER` | `twr-builder[bot]` | The build publisher's login |
 | `LADDER_AUTHORS` | (empty: nobody) | Comma-separated logins whose pull requests are reviewed and who may author a commit in one |
@@ -116,6 +116,7 @@ Every `pit-crew` step reads these.
 | `LADDER_HOLD_LABEL` | `hold` | |
 | `LADDER_READY_LABEL` | `agent-ready` | |
 | `LADDER_TRIAGE_LABEL` | `needs triage` | |
+| `LADDER_REREVIEW_LABEL` | `re-review` | On a pull request, applied by the maintainer after the review record at the head: the head counts as unreviewed again (the poller); `publish-review` takes it off once it has posted or held |
 | `LADDER_ISSUE_REPO` | `those-who-run/paddock` | Where issues live |
 | `LADDER_COMPONENT_PREFIX` | `component: ` | The label prefix that names a repository |
 | `LADDER_COMPONENTS` | (empty) | `label=owner/name` pairs, comma-separated, where the name alone does not say; an empty value means never built by a Job |
@@ -138,6 +139,17 @@ have been granted:
 
 A token for `poll` and `ready` covers every repository of the installation; the
 others are scoped to the repositories the step touches.
+
+A pull request's labels, label events and comments are read and written through
+the issues endpoints (`/repos/{owner}/{repo}/issues/{number}/…`), which GitHub
+grants to the Pull requests permission for a pull request: reading a pull
+request's timeline for the `re-review` label's event needs pull requests: read,
+which `poll` and `ready` have, and removing the label
+(`DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}`) needs pull
+requests: write, which `publish-review` has. Issues: write is not asked for. Should
+GitHub refuse the removal all the same, `publish-review` logs a warning and its
+exit code stands; the review is posted and its record is newer than the label's
+event, so the label re-opens nothing until the maintainer applies it again.
 
 ## The poller: `pit-crew poll`
 
@@ -168,12 +180,33 @@ The gates, in order: quiet window, back-off, daily cap, active Jobs, idle gate.
 A gate that cannot be read (the idle gate's URL down, the Jobs list refused)
 closes: the poller starts nothing and says so in the heartbeat.
 
+What is due on a pull request in the ladder, decided from what GitHub holds
+([`internal/ladder`](../internal/ladder/pr.go)):
+
+- `review` when there is no review record at the head (reason
+  `no-review-at-head`), when the builder answered since the last one
+  (`answered-since-review`), or when the pull request carries the
+  `re-review` label, the event that applied it is the maintainer's
+  (`LADDER_MAINTAINER`) and newer than the newest review record at the head
+  (`re-review`). The label counts whatever the record says, held or a verdict,
+  so the maintainer can ask for a second look after a bad review; the label from
+  any other account, or one applied before the record, changes nothing. The
+  label's event is read from the pull request's timeline, and only when the
+  label is on;
+- `fix` or `stuck` when the verdict is `changes` on a builder's pull request;
+- `ready` when the verdict is `ready` or `nits` and every required check is
+  green;
+- otherwise nothing, with the reason (`verdict-held`, `checks-pending`, …).
+
 ### Job names and idempotency
 
 Job names are deterministic, so a unit of work is tried once per Job lifetime:
 
 - review: `review-<repo>-<number>-<sha8>-f<rounds>` (the rounds answered so far,
-  so a builder's answer at the same head gets a new review);
+  so a builder's answer at the same head gets a new review), with `-a<asks>`
+  appended when the review was asked for again with the `re-review` label (the
+  times the maintainer has applied it to the pull request), since the first
+  review's Job at that head is still there for its TTL;
 - build: `build-<repo>-<issue>`;
 - fix: `fix-<repo>-<number>-r<round>`.
 
@@ -390,12 +423,15 @@ starts again until the head moves. That is deliberate for a hold on a private
 value or a mention, which a second run would repeat. It also holds after an
 operational failure (the first Job on the maintainer's cluster held with
 `verdict-missing` because the wrapper had not granted the Write tool), where a
-second run is what is wanted. What is planned, and not built: a label
-`re-review` on the pull request counts only when the event that applied it is
-by the maintainer's login (as `agent-ready` does for an issue) and is newer than
-the held status; then the head counts as unreviewed and a review Job starts
-again, and the publisher removes the label when it posts. Until then a held
-pull request is reviewed again only at its next head.
+second run is what is wanted. For that the maintainer applies the label
+`re-review` (`LADDER_REREVIEW_LABEL`) to the pull request: it counts only when
+the event that applied it is by the maintainer's login (as `agent-ready` does for
+an issue) and is newer than the review record at the head; then the head counts
+as unreviewed, the poller starts a review Job again, and this step takes the
+label off once it has posted or held, so one label is one more run. The removal
+is logged; one GitHub refuses is a warning and leaves the exit code as it was
+(see [the permissions](#common-environment)). A head that moved posts nothing
+and leaves the label, for the run at the new head to consume.
 
 ### `pit-crew publish-build`
 

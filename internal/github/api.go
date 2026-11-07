@@ -260,6 +260,20 @@ func (c *Client) UpdateComment(ctx context.Context, repo string, id int64, body 
 	return c.patch(ctx, fmt.Sprintf("%s/issues/comments/%d", path, id), map[string]string{"body": body})
 }
 
+// RemoveLabel takes a label off an issue or a pull request. A label that is not
+// there (GitHub answers 404) is not an error: the point is that it is gone.
+func (c *Client) RemoveLabel(ctx context.Context, repo string, number int, name string) error {
+	path, err := repoPath(repo)
+	if err != nil {
+		return err
+	}
+	err = c.delete(ctx, fmt.Sprintf("%s/issues/%d/labels/%s", path, number, url.PathEscape(name)))
+	if IsStatus(err, 404) {
+		return nil
+	}
+	return err
+}
+
 // Status is one commit status.
 type Status struct {
 	Context     string

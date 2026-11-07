@@ -20,12 +20,16 @@ func PoliciesFromEnv(getenv func(string) string) (Policies, error) {
 			Authors:    list(getenv("LADDER_AUTHORS")),
 			Committers: list(getenv("LADDER_COMMITTERS")),
 			HoldLabel:  or(getenv("LADDER_HOLD_LABEL"), "hold"),
+			// The same login that starts a build with agent-ready asks for a review
+			// again with re-review.
+			Maintainer:    getenv("LADDER_MAINTAINER"),
+			ReReviewLabel: or(getenv("LADDER_REREVIEW_LABEL"), "re-review"),
 		},
 		Repos:     list(getenv("LADDER_REPOS")),
 		IssueRepo: or(getenv("LADDER_ISSUE_REPO"), owner+"/paddock"),
 	}
 	p.Build = ladder.BuildPolicy{
-		Maintainer:      getenv("LADDER_MAINTAINER"),
+		Maintainer:      p.Pull.Maintainer,
 		Builder:         p.Pull.Builder,
 		Authors:         p.Pull.Authors,
 		ReadyLabel:      or(getenv("LADDER_READY_LABEL"), "agent-ready"),

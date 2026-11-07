@@ -1,14 +1,20 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/those-who-run/pit-crew/internal/fetch"
 	"github.com/those-who-run/pit-crew/internal/github"
@@ -27,6 +33,9 @@ type gh struct {
 	created  []string
 	updated  map[int64]string
 	statuses []string
+	removed  []string
+	// refuseLabel is the answer to every label removal, when set.
+	refuseLabel error
 }
 
 func (g *gh) GetPull(context.Context, string, int) (github.PullRequest, error) { return g.pull, nil }
@@ -46,6 +55,13 @@ func (g *gh) UpdateComment(_ context.Context, _ string, id int64, body string) e
 }
 func (g *gh) SetStatus(_ context.Context, _, sha, context, state, description string) error {
 	g.statuses = append(g.statuses, fmt.Sprintf("%s %s %s: %s", sha[:8], context, state, description))
+	return nil
+}
+func (g *gh) RemoveLabel(_ context.Context, _ string, _ int, name string) error {
+	if g.refuseLabel != nil {
+		return g.refuseLabel
+	}
+	g.removed = append(g.removed, name)
 	return nil
 }
 
@@ -86,7 +102,7 @@ func volumes(t *testing.T, verdict ladder.Verdict, comment, private string) Conf
 	if private != "" {
 		write(t, dir, "out/private.md", private)
 	}
-	return Config{Repo: "those-who-run/ecu", Number: 31, HeadSHA: head, Reviewer: "twr-reviewer[bot]", Dir: dir, HoldDir: filepath.Join(dir, "hold")}
+	return Config{Repo: "those-who-run/ecu", Number: 31, HeadSHA: head, Reviewer: "twr-reviewer[bot]", ReReviewLabel: "re-review", Dir: dir, HoldDir: filepath.Join(dir, "hold")}
 }
 
 func comment(verdict ladder.Verdict, extra string) string {
@@ -219,6 +235,116 @@ func TestPrivateBesideACleanCommentIsHeldAlone(t *testing.T) {
 	}
 }
 
+// The re-review label comes off once the review is on GitHub, posted or held, so
+// one label is one more run; a pull request without it sees no removal, and a
+// review that posted nothing (the head moved) leaves it for the next head's run.
+func TestTheReReviewLabelComesOffAfterTheReview(t *testing.T) {
+	labelled := github.PullRequest{HeadSHA: head, Labels: []string{"parity", "Re-Review"}}
+	t.Run("after a post", func(t *testing.T) {
+		cfg := volumes(t, ladder.VerdictReady, comment(ladder.VerdictReady, ""), "")
+		g := &gh{pull: labelled}
+		if code := Run(t.Context(), cfg, g, logger()); code != 0 || !reflect.DeepEqual(g.removed, []string{"re-review"}) {
+			t.Errorf("exit %d, removed %q", code, g.removed)
+		}
+	})
+	t.Run("after a hold", func(t *testing.T) {
+		cfg := volumes(t, ladder.VerdictReady, comment(ladder.VerdictReady, "cc @someone\n\n"), "")
+		g := &gh{pull: labelled}
+		if code := Run(t.Context(), cfg, g, logger()); code != 10 || !reflect.DeepEqual(g.removed, []string{"re-review"}) {
+			t.Errorf("exit %d, removed %q", code, g.removed)
+		}
+	})
+	t.Run("not on the pull request", func(t *testing.T) {
+		cfg := volumes(t, ladder.VerdictReady, comment(ladder.VerdictReady, ""), "")
+		g := &gh{pull: github.PullRequest{HeadSHA: head, Labels: []string{"parity"}}}
+		if code := Run(t.Context(), cfg, g, logger()); code != 0 || len(g.removed) != 0 {
+			t.Errorf("exit %d, removed %q", code, g.removed)
+		}
+	})
+	t.Run("the head moved", func(t *testing.T) {
+		cfg := volumes(t, ladder.VerdictReady, comment(ladder.VerdictReady, ""), "")
+		g := &gh{pull: github.PullRequest{HeadSHA: other, Labels: []string{"re-review"}}}
+		if code := Run(t.Context(), cfg, g, logger()); code != 11 || len(g.removed) != 0 {
+			t.Errorf("exit %d, removed %q", code, g.removed)
+		}
+	})
+	t.Run("a removal GitHub refuses is a warning, and the exit code stands", func(t *testing.T) {
+		cfg := volumes(t, ladder.VerdictReady, comment(ladder.VerdictReady, ""), "")
+		g := &gh{pull: labelled, refuseLabel: &github.Error{Method: "DELETE", Path: "/x", Status: 403, Message: "Resource not accessible by integration"}}
+		var log bytes.Buffer
+		if code := Run(t.Context(), cfg, g, slog.New(slog.NewTextHandler(&log, nil))); code != 0 || len(g.created) != 1 {
+			t.Errorf("exit %d, created %d", code, len(g.created))
+		}
+		if !strings.Contains(log.String(), "level=WARN msg=\"remove label\"") || !strings.Contains(log.String(), "403") {
+			t.Errorf("log %q", log.String())
+		}
+	})
+}
+
+// The step against GitHub at the HTTP boundary: the comment, the status and the
+// label removal as the API sees them, and a label already gone (404) is no error.
+func TestAgainstTheHTTPAPI(t *testing.T) {
+	var mu sync.Mutex
+	var requests []string
+	labelStatus := http.StatusOK
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		switch r.Method + " " + r.URL.Path {
+		case "GET /repos/those-who-run/ecu/pulls/31":
+			_, _ = fmt.Fprint(w, `{"number": 31, "user": {"login": "twr-builder[bot]"}, "head": {"ref": "agent/232-x", "sha": "`+head+`"}, "base": {"ref": "main"},
+			  "labels": [{"name": "parity"}, {"name": "re-review"}]}`)
+		case "GET /repos/those-who-run/ecu/issues/31/comments":
+			_, _ = fmt.Fprint(w, `[]`)
+		case "POST /repos/those-who-run/ecu/issues/31/comments":
+			_, _ = fmt.Fprint(w, `{"id": 42}`)
+		case "POST /repos/those-who-run/ecu/statuses/" + head:
+			_, _ = fmt.Fprint(w, `{"id": 1}`)
+		case "DELETE /repos/those-who-run/ecu/issues/31/labels/re-review":
+			w.WriteHeader(labelStatus)
+			if labelStatus == http.StatusOK {
+				_, _ = fmt.Fprint(w, `[{"name": "parity"}]`)
+			} else {
+				_, _ = fmt.Fprint(w, `{"message": "Label does not exist"}`)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprint(w, `{"message": "Not Found"}`)
+		}
+	}))
+	defer server.Close()
+	client := &github.Client{BaseURL: server.URL, Token: "ghs_test", Retries: 1, Sleep: func(context.Context, time.Duration) error { return nil }}
+	run := func(t *testing.T, verdict ladder.Verdict, extra string, want int) []string {
+		t.Helper()
+		mu.Lock()
+		requests = nil
+		mu.Unlock()
+		cfg := volumes(t, verdict, comment(verdict, extra), "")
+		if code := Run(t.Context(), cfg, client, logger()); code != want {
+			t.Fatalf("exit %d, want %d", code, want)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), requests...)
+	}
+	if got := run(t, ladder.VerdictReady, "", 0); !reflect.DeepEqual(got, []string{
+		"GET /repos/those-who-run/ecu/pulls/31", "GET /repos/those-who-run/ecu/issues/31/comments", "POST /repos/those-who-run/ecu/issues/31/comments",
+		"POST /repos/those-who-run/ecu/statuses/" + head, "DELETE /repos/those-who-run/ecu/issues/31/labels/re-review",
+	}) {
+		t.Errorf("a post made %q", got)
+	}
+	if got := run(t, ladder.VerdictReady, "cc @someone\n\n", 10); !reflect.DeepEqual(got, []string{
+		"GET /repos/those-who-run/ecu/pulls/31", "POST /repos/those-who-run/ecu/statuses/" + head, "DELETE /repos/those-who-run/ecu/issues/31/labels/re-review",
+	}) {
+		t.Errorf("a hold made %q", got)
+	}
+	labelStatus = http.StatusNotFound
+	if got := run(t, ladder.VerdictReady, "", 0); got[len(got)-1] != "DELETE /repos/those-who-run/ecu/issues/31/labels/re-review" {
+		t.Errorf("with the label gone already: %q", got)
+	}
+}
+
 func TestStatusOnlyReview(t *testing.T) {
 	cfg := volumes(t, ladder.VerdictReady, "", "")
 	write(t, cfg.Dir, "out/verdict.json", `{"repo": "those-who-run/ecu", "pr": 31, "sha": "`+head+`", "kind": "D", "lane": "standard", "verdict": "ready", "blocking": [], "ran": [], "not_run": []}`)
@@ -267,7 +393,7 @@ func TestConfigFromEnv(t *testing.T) {
 	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 	good := map[string]string{"PUBLISH_REPO": "those-who-run/ecu", "PUBLISH_NUMBER": "31", "PUBLISH_HEAD_SHA": head, "PUBLISH_HOLD_DIR": "/hold"}
 	cfg, err := ConfigFromEnv(env(good))
-	if err != nil || cfg.Dir != "/work" || cfg.Reviewer != "twr-reviewer[bot]" || cfg.Number != 31 {
+	if err != nil || cfg.Dir != "/work" || cfg.Reviewer != "twr-reviewer[bot]" || cfg.ReReviewLabel != "re-review" || cfg.Number != 31 {
 		t.Errorf("%+v %v", cfg, err)
 	}
 	for _, drop := range []string{"PUBLISH_REPO", "PUBLISH_NUMBER", "PUBLISH_HEAD_SHA", "PUBLISH_HOLD_DIR"} {

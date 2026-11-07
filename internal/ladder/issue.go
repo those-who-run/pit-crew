@@ -114,8 +114,8 @@ func (p BuildPolicy) Target(labels []string) (repo, reason string) {
 	return "", "repository-not-allowed"
 }
 
-// labelledAt finds the event that put the label on the issue: the last time it was
-// added. The actor of that event is who asked for the build.
+// labelledAt finds the event that put the label on the issue or pull request: the
+// last time it was added. The actor of that event is who asked.
 func labelledAt(events []LabelEvent, label string) (LabelEvent, bool) {
 	sorted := append([]LabelEvent(nil), events...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].At.Before(sorted[j].At) })
@@ -135,13 +135,13 @@ func labelledAt(events []LabelEvent, label string) (LabelEvent, bool) {
 // the issue after the label was added means that event is spent, whatever became of
 // the pull request; the maintainer adds the label again to ask for another.
 func (p BuildPolicy) Decide(issue Issue) BuildDecision {
-	if p.ReadyLabel == "" || !hasLabel(issue.Labels, p.ReadyLabel) {
+	if p.ReadyLabel == "" || !HasLabel(issue.Labels, p.ReadyLabel) {
 		return BuildDecision{Reason: "not-ready"}
 	}
-	if p.TriageLabel != "" && hasLabel(issue.Labels, p.TriageLabel) {
+	if p.TriageLabel != "" && HasLabel(issue.Labels, p.TriageLabel) {
 		return BuildDecision{Reason: "needs-triage"}
 	}
-	if p.HoldLabel != "" && hasLabel(issue.Labels, p.HoldLabel) {
+	if p.HoldLabel != "" && HasLabel(issue.Labels, p.HoldLabel) {
 		return BuildDecision{Reason: "hold"}
 	}
 	event, ok := labelledAt(issue.LabelEvents, p.ReadyLabel)
