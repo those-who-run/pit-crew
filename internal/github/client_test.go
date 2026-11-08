@@ -279,6 +279,59 @@ func TestAServerErrorIsRetriedForReadsOnly(t *testing.T) {
 	}
 }
 
+// timeout is what net/http returns when a request runs out of time.
+type timeout struct{}
+
+func (timeout) Error() string   { return "i/o timeout" }
+func (timeout) Timeout() bool   { return true }
+func (timeout) Temporary() bool { return true }
+
+// statusErr stands for the App token's error, which carries GitHub's status the
+// same way.
+type statusErr int
+
+func (s statusErr) Error() string   { return fmt.Sprintf("apptoken: %d", int(s)) }
+func (s statusErr) HTTPStatus() int { return int(s) }
+
+func TestUnavailable(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"504 from GitHub", &Error{Method: "GET", Path: "/rate_limit", Status: 504}, true},
+		{"502, wrapped", fmt.Errorf("listing: %w", &Error{Status: 502}), true},
+		{"500", &Error{Status: 500}, true},
+		{"503 while minting the token", fmt.Errorf("mint: %w", statusErr(503)), true},
+		{"a timeout", fmt.Errorf("github: GET /rate_limit: %w", &net.OpError{Op: "read", Err: timeout{}}), true},
+		{"401", &Error{Status: 401}, false},
+		{"403", &Error{Status: 403}, false},
+		{"404", &Error{Status: 404}, false},
+		{"422 while minting the token", statusErr(422), false},
+		{"connection refused", &net.OpError{Op: "dial", Err: errors.New("connect: connection refused")}, false},
+		{"a configuration error", errors.New("APP_KEY_FILE: no such file"), false},
+		{"nil", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Unavailable(c.err); got != c.want {
+				t.Errorf("Unavailable(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
+}
+
+// The incident's first call: GET /rate_limit answering 504 on every try. After
+// the retries, the error says GitHub was unavailable.
+func TestWaitForNetworkOnAGitHubOutage(t *testing.T) {
+	f, c := newFake(t)
+	f.failFirst, f.failStatus = 100, http.StatusGatewayTimeout
+	err := c.WaitForNetwork(t.Context())
+	if !IsStatus(err, http.StatusGatewayTimeout) || !Unavailable(err) || len(f.requests) != 6 {
+		t.Errorf("error %v after %d requests", err, len(f.requests))
+	}
+}
+
 func TestSleepHonoursTheContext(t *testing.T) {
 	f, c := newFake(t)
 	c.Sleep = nil

@@ -49,11 +49,15 @@ type source struct {
 	branches map[string][]string
 	// broken makes one repository's pull list fail.
 	broken string
+	// reposErr is the answer to the first call, the installation's repositories.
+	reposErr error
 }
 
 func key(repo string, n int) string { return fmt.Sprintf("%s#%d", repo, n) }
 
-func (s *source) ListInstallationRepos(context.Context) ([]string, error) { return s.repos, nil }
+func (s *source) ListInstallationRepos(context.Context) ([]string, error) {
+	return s.repos, s.reposErr
+}
 func (s *source) ListOpenPulls(_ context.Context, repo string) ([]github.PullRequest, error) {
 	if repo == s.broken {
 		return nil, errors.New("boom")
@@ -517,6 +521,52 @@ func TestHeartbeatIsSentAndWritten(t *testing.T) {
 	p.Limits.HeartbeatFile = filepath.Join(t.TempDir(), "no", "such", "dir")
 	if _, err := p.Run(t.Context()); err != nil {
 		t.Errorf("run failed on the heartbeat: %v", err)
+	}
+}
+
+// GitHub answering 5xx, or timing out, after the client's retries is GitHub's
+// outage: the run starts nothing, says so in the heartbeat and returns no
+// error, so the CronJob's Job does not fail. A 4xx is the poller's to fix, and
+// still fails the run.
+func TestAGitHubOutageIsNotAFailedRun(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		err  error
+	}{
+		{"504 on the first call", &github.Error{Method: "GET", Path: "/installation/repositories", Status: 504, Message: "Gateway Timeout"}},
+		{"502, wrapped", fmt.Errorf("listing: %w", &github.Error{Status: 502})},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := world()
+			src.reposErr = c.err
+			j := &jobs{}
+			file := filepath.Join(t.TempDir(), "heartbeat.json")
+			p := newPoller(t, src, j, Limits{StartJobs: true, TemplateDir: templates(t, "review", "fix", "build"), MaxActive: 1, DailyCap: 12, HeartbeatFile: file})
+			hb, err := p.Run(t.Context())
+			if err != nil || !hb.GitHubUnavailable || hb.Errors != 1 || len(j.created) != 0 {
+				t.Errorf("heartbeat %+v, err %v, created %d", hb, err, len(j.created))
+			}
+			data, _ := os.ReadFile(file) //nolint:gosec // a file in the test's temp dir
+			if !strings.Contains(string(data), `"github_unavailable":true`) || !strings.Contains(string(data), `"errors":1`) || !strings.Contains(string(data), `"at":"2026-11-06T09:00:00Z"`) {
+				t.Errorf("heartbeat file %s", data)
+			}
+		})
+	}
+	for _, status := range []int{401, 403, 404} {
+		src := world()
+		src.reposErr = &github.Error{Method: "GET", Path: "/installation/repositories", Status: status}
+		file := filepath.Join(t.TempDir(), "heartbeat.json")
+		if _, err := newPoller(t, src, &jobs{}, Limits{HeartbeatFile: file}).Run(t.Context()); !github.IsStatus(err, status) {
+			t.Errorf("%d: err %v, want it returned", status, err)
+		}
+	}
+	// A run that read GitHub says it was available.
+	file := filepath.Join(t.TempDir(), "heartbeat.json")
+	if hb, err := newPoller(t, world(), &jobs{}, Limits{HeartbeatFile: file}).Run(t.Context()); err != nil || hb.GitHubUnavailable {
+		t.Errorf("heartbeat %+v, %v", hb, err)
+	}
+	if data, _ := os.ReadFile(file); !strings.Contains(string(data), `"github_unavailable":false`) { //nolint:gosec // a file in the test's temp dir
+		t.Errorf("heartbeat file %s", data)
 	}
 }
 
