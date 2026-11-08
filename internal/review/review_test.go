@@ -34,8 +34,11 @@ type gh struct {
 	updated  map[int64]string
 	statuses []string
 	removed  []string
-	// refuseLabel is the answer to every label removal, when set.
-	refuseLabel error
+	added    []string
+	timeline []github.TimelineEvent
+	// refuseLabel is the answer to every label removal, when set; refuseAdd and
+	// refuseTimeline the same for putting a label on and reading the timeline.
+	refuseLabel, refuseAdd, refuseTimeline error
 }
 
 func (g *gh) GetPull(context.Context, string, int) (github.PullRequest, error) { return g.pull, nil }
@@ -63,6 +66,17 @@ func (g *gh) RemoveLabel(_ context.Context, _ string, _ int, name string) error 
 	}
 	g.removed = append(g.removed, name)
 	return nil
+}
+
+func (g *gh) AddLabel(_ context.Context, _ string, _ int, name string) error {
+	if g.refuseAdd != nil {
+		return g.refuseAdd
+	}
+	g.added = append(g.added, name)
+	return nil
+}
+func (g *gh) ListTimeline(context.Context, string, int) ([]github.TimelineEvent, error) {
+	return g.timeline, g.refuseTimeline
 }
 
 func write(t *testing.T, dir, name, text string) {
@@ -281,6 +295,90 @@ func TestTheReReviewLabelComesOffAfterTheReview(t *testing.T) {
 	})
 }
 
+// readAt records in task.json, as fetch does, when the fetch step read the pull
+// request.
+func readAt(t *testing.T, cfg Config, when time.Time) {
+	t.Helper()
+	task, _ := json.Marshal(fetch.Task{Kind: "review", Repo: "those-who-run/ecu", Number: 31, HeadSHA: head, BaseRef: "main", BaseSHA: other, Lane: "standard", FetchedAt: when})
+	write(t, cfg.Dir, "data/task.json", string(task))
+}
+
+// The maintainer may label the pull request while the review's Job is running.
+// That ask came after the fetch step read the pull request, so this review did
+// not answer it: the label is handed back (taken off and put on again as the
+// reviewer, newer than this review's record) rather than consumed. An ask the
+// fetch saw comes off as before.
+func TestAReReviewAskedWhileTheReviewRanIsKept(t *testing.T) {
+	fetched := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	labelled := github.PullRequest{HeadSHA: head, Labels: []string{"parity", "re-review"}}
+	ask := func(actor string, minutes int) github.TimelineEvent {
+		return github.TimelineEvent{Event: "labeled", Actor: actor, Label: "re-review", At: fetched.Add(time.Duration(minutes) * time.Minute)}
+	}
+	setup := func(t *testing.T, comment string, timeline ...github.TimelineEvent) (Config, *gh) {
+		t.Helper()
+		cfg := volumes(t, ladder.VerdictReady, comment, "")
+		cfg.Maintainer = "octo-maintainer"
+		readAt(t, cfg, fetched)
+		return cfg, &gh{pull: labelled, timeline: timeline}
+	}
+	cases := []struct {
+		name     string
+		comment  string
+		timeline []github.TimelineEvent
+		want     int
+		added    []string
+	}{
+		{"asked during the review, then a post", comment(ladder.VerdictReady, ""), []github.TimelineEvent{ask("octo-maintainer", 3)}, 0, []string{"re-review"}},
+		{"asked during the review, then a hold", comment(ladder.VerdictReady, "cc @someone\n\n"), []github.TimelineEvent{ask("octo-maintainer", 3)}, 10, []string{"re-review"}},
+		{"asked before the fetch read the pull request", comment(ladder.VerdictReady, ""), []github.TimelineEvent{ask("octo-maintainer", -3)}, 0, nil},
+		{"asked at the moment of the read", comment(ladder.VerdictReady, ""), []github.TimelineEvent{ask("octo-maintainer", 0)}, 0, nil},
+		{"asked before, removed, and asked again during the review", comment(ladder.VerdictReady, ""), []github.TimelineEvent{
+			ask("octo-maintainer", -3), {Event: "unlabeled", Actor: "octo-maintainer", Label: "re-review", At: fetched.Add(time.Minute)}, ask("octo-maintainer", 2),
+		}, 0, []string{"re-review"}},
+		{"a stranger labelled it during the review", comment(ladder.VerdictReady, ""), []github.TimelineEvent{ask("octo-maintainer", -3), ask("someone-else", 3)}, 0, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, g := setup(t, c.comment, c.timeline...)
+			if code := Run(t.Context(), cfg, g, logger()); code != c.want {
+				t.Errorf("exit %d, want %d", code, c.want)
+			}
+			if !reflect.DeepEqual(g.removed, []string{"re-review"}) || !reflect.DeepEqual(g.added, c.added) {
+				t.Errorf("removed %q, added %q; want removed [re-review], added %q", g.removed, g.added, c.added)
+			}
+		})
+	}
+	t.Run("the timeline cannot be read: the label stays, with a warning", func(t *testing.T) {
+		cfg, g := setup(t, comment(ladder.VerdictReady, ""))
+		g.refuseTimeline = &github.Error{Method: "GET", Path: "/x", Status: 502, Message: "Bad Gateway"}
+		var log bytes.Buffer
+		if code := Run(t.Context(), cfg, g, slog.New(slog.NewTextHandler(&log, nil))); code != 0 || len(g.removed) != 0 || len(g.added) != 0 {
+			t.Errorf("exit %d, removed %q, added %q", code, g.removed, g.added)
+		}
+		if !strings.Contains(log.String(), "level=WARN") || !strings.Contains(log.String(), "re-review label left on") {
+			t.Errorf("log %q", log.String())
+		}
+	})
+	t.Run("putting it back is refused: a warning, and the exit code stands", func(t *testing.T) {
+		cfg, g := setup(t, comment(ladder.VerdictReady, ""), ask("octo-maintainer", 3))
+		g.refuseAdd = &github.Error{Method: "POST", Path: "/x", Status: 403, Message: "Resource not accessible by integration"}
+		var log bytes.Buffer
+		if code := Run(t.Context(), cfg, g, slog.New(slog.NewTextHandler(&log, nil))); code != 0 || len(g.created) != 1 {
+			t.Errorf("exit %d, created %d", code, len(g.created))
+		}
+		if !strings.Contains(log.String(), "level=WARN") || !strings.Contains(log.String(), "apply it again") {
+			t.Errorf("log %q", log.String())
+		}
+	})
+	t.Run("no maintainer configured: nobody's ask is kept", func(t *testing.T) {
+		cfg, g := setup(t, comment(ladder.VerdictReady, ""), ask("octo-maintainer", 3))
+		cfg.Maintainer = ""
+		if code := Run(t.Context(), cfg, g, logger()); code != 0 || len(g.removed) != 1 || len(g.added) != 0 {
+			t.Errorf("exit %d, removed %q, added %q", code, g.removed, g.added)
+		}
+	})
+}
+
 // The step against GitHub at the HTTP boundary: the comment, the status and the
 // label removal as the API sees them, and a label already gone (404) is no error.
 func TestAgainstTheHTTPAPI(t *testing.T) {
@@ -301,6 +399,10 @@ func TestAgainstTheHTTPAPI(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"id": 42}`)
 		case "POST /repos/those-who-run/ecu/statuses/" + head:
 			_, _ = fmt.Fprint(w, `{"id": 1}`)
+		case "GET /repos/those-who-run/ecu/issues/31/timeline":
+			_, _ = fmt.Fprint(w, `[{"event": "labeled", "actor": {"login": "octo-maintainer"}, "label": {"name": "re-review"}, "created_at": "2026-11-08T09:03:00Z"}]`)
+		case "POST /repos/those-who-run/ecu/issues/31/labels":
+			_, _ = fmt.Fprint(w, `[{"name": "parity"}, {"name": "re-review"}]`)
 		case "DELETE /repos/those-who-run/ecu/issues/31/labels/re-review":
 			w.WriteHeader(labelStatus)
 			if labelStatus == http.StatusOK {
@@ -315,12 +417,17 @@ func TestAgainstTheHTTPAPI(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &github.Client{BaseURL: server.URL, Token: "ghs_test", Retries: 1, Sleep: func(context.Context, time.Duration) error { return nil }}
+	var fetched time.Time
 	run := func(t *testing.T, verdict ladder.Verdict, extra string, want int) []string {
 		t.Helper()
 		mu.Lock()
 		requests = nil
 		mu.Unlock()
 		cfg := volumes(t, verdict, comment(verdict, extra), "")
+		cfg.Maintainer = "octo-maintainer"
+		if !fetched.IsZero() {
+			readAt(t, cfg, fetched)
+		}
 		if code := Run(t.Context(), cfg, client, logger()); code != want {
 			t.Fatalf("exit %d, want %d", code, want)
 		}
@@ -339,6 +446,22 @@ func TestAgainstTheHTTPAPI(t *testing.T) {
 	}) {
 		t.Errorf("a hold made %q", got)
 	}
+	// The maintainer's ask at 09:03 came after the fetch read the pull request at
+	// 09:00: the label is handed back.
+	fetched = time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	if got := run(t, ladder.VerdictReady, "", 0); !reflect.DeepEqual(got[len(got)-3:], []string{
+		"GET /repos/those-who-run/ecu/issues/31/timeline", "DELETE /repos/those-who-run/ecu/issues/31/labels/re-review", "POST /repos/those-who-run/ecu/issues/31/labels",
+	}) {
+		t.Errorf("an ask during the review made %q", got)
+	}
+	// Read at 09:05, the ask was there to see: the label comes off.
+	fetched = time.Date(2026, 11, 8, 9, 5, 0, 0, time.UTC)
+	if got := run(t, ladder.VerdictReady, "", 0); !reflect.DeepEqual(got[len(got)-2:], []string{
+		"GET /repos/those-who-run/ecu/issues/31/timeline", "DELETE /repos/those-who-run/ecu/issues/31/labels/re-review",
+	}) {
+		t.Errorf("an ask the review saw made %q", got)
+	}
+	fetched = time.Time{}
 	labelStatus = http.StatusNotFound
 	if got := run(t, ladder.VerdictReady, "", 0); got[len(got)-1] != "DELETE /repos/those-who-run/ecu/issues/31/labels/re-review" {
 		t.Errorf("with the label gone already: %q", got)
@@ -395,6 +518,13 @@ func TestConfigFromEnv(t *testing.T) {
 	cfg, err := ConfigFromEnv(env(good))
 	if err != nil || cfg.Dir != "/work" || cfg.Reviewer != "twr-reviewer[bot]" || cfg.ReReviewLabel != "re-review" || cfg.Number != 31 {
 		t.Errorf("%+v %v", cfg, err)
+	}
+	withMaintainer := map[string]string{"LADDER_MAINTAINER": "octo-maintainer"}
+	for k, v := range good {
+		withMaintainer[k] = v
+	}
+	if cfg, err := ConfigFromEnv(env(withMaintainer)); err != nil || cfg.Maintainer != "octo-maintainer" {
+		t.Errorf("maintainer %q, %v", cfg.Maintainer, err)
 	}
 	for _, drop := range []string{"PUBLISH_REPO", "PUBLISH_NUMBER", "PUBLISH_HEAD_SHA", "PUBLISH_HOLD_DIR"} {
 		m := map[string]string{}

@@ -222,15 +222,59 @@ func (p Policy) FixRounds(pr PullRequest) (rounds int, last time.Time) {
 
 // reReviewAsked reports whether the maintainer asked for the head to be reviewed
 // again: the pull request carries the re-review label, the event that put it there
-// is the maintainer's, and it is newer than the review record at the head. The
-// label from any other account changes nothing, and nor does one applied before
-// the review, which that review already answered.
+// is newer than the review record at the head, and it is the maintainer's, or the
+// reviewer's handing back an ask of the maintainer's that its review did not
+// answer (see ReReviewAskedAfter). The label from any other account changes
+// nothing, and nor does one applied before the review, which that review already
+// answered.
 func (p Policy) reReviewAsked(pr PullRequest, reviewedAt time.Time) bool {
 	if p.ReReviewLabel == "" || !HasLabel(pr.Labels, p.ReReviewLabel) {
 		return false
 	}
 	event, ok := labelledAt(pr.LabelEvents, p.ReReviewLabel)
-	return ok && sameLogin(event.Actor, p.Maintainer) && event.At.After(reviewedAt)
+	if !ok || !event.At.After(reviewedAt) {
+		return false
+	}
+	if sameLogin(event.Actor, p.Maintainer) {
+		return true
+	}
+	// The reviewer puts the label back only for an ask of the maintainer's, so
+	// one with no ask before it is not one.
+	return sameLogin(event.Actor, p.Reviewer) && p.maintainerAskedBy(pr.LabelEvents, event.At)
+}
+
+// ReReviewAskedAfter reports whether the maintainer put the re-review label on
+// the pull request after t, and it has not come off since. publish-review asks it
+// with the moment its fetch step read the pull request: an ask at or before then
+// was there for the review to see, and the review answers it; one after it came
+// while the review ran, and is still owed one.
+func (p Policy) ReReviewAskedAfter(events []LabelEvent, t time.Time) bool {
+	sorted := append([]LabelEvent(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].At.Before(sorted[j].At) })
+	asked := false
+	for _, event := range sorted {
+		if !strings.EqualFold(event.Label, p.ReReviewLabel) {
+			continue
+		}
+		switch {
+		case !event.Added:
+			asked = false
+		case sameLogin(event.Actor, p.Maintainer) && event.At.After(t):
+			asked = true
+		}
+	}
+	return asked
+}
+
+// maintainerAskedBy reports whether the maintainer put the re-review label on at
+// or before t.
+func (p Policy) maintainerAskedBy(events []LabelEvent, t time.Time) bool {
+	for _, event := range events {
+		if event.Added && strings.EqualFold(event.Label, p.ReReviewLabel) && sameLogin(event.Actor, p.Maintainer) && !event.At.After(t) {
+			return true
+		}
+	}
+	return false
 }
 
 // ReReviews returns how many times the maintainer has put the re-review label on

@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/those-who-run/pit-crew/internal/github"
 	"github.com/those-who-run/pit-crew/internal/ladder"
@@ -67,6 +68,8 @@ type Config struct {
 	GitBase string
 	// Token is the installation token for the clone; empty for none.
 	Token string
+	// Now is the clock fetched_at is read from; nil is the system clock.
+	Now func() time.Time
 }
 
 // ConfigFromEnv reads the configuration; a value that cannot be read is an error.
@@ -150,6 +153,11 @@ type Task struct {
 	AgentRef  string `json:"agent_ref"`
 	AgentSHA  string `json:"agent_sha"`
 	Author    string `json:"author,omitempty"`
+	// FetchedAt is when the step read the pull request (review, fix): taken just
+	// before the read, so anything GitHub shows at an earlier time, such as a label
+	// event, was there for the read to see. publish-review compares the maintainer's
+	// re-review label against it.
+	FetchedAt time.Time `json:"fetched_at,omitzero"`
 }
 
 // Paths under Dir.
@@ -195,6 +203,13 @@ func (c Config) gitEnv() []string {
 		env = append(env, "GIT_CONFIG_KEY_"+n+"="+pair[0], "GIT_CONFIG_VALUE_"+n+"="+pair[1])
 	}
 	return env
+}
+
+func (c Config) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
 }
 
 func (c Config) url(repo string) string { return c.GitBase + repo + ".git" }
@@ -254,6 +269,7 @@ func run(ctx context.Context, cfg Config, src Source, logger *slog.Logger) (int,
 		}
 		statement = buildStatement(task, cfg.Dir)
 	case KindReview, KindFix:
+		task.FetchedAt = cfg.now().UTC()
 		pr, err := src.GetPull(ctx, cfg.Repo, cfg.Number)
 		if err != nil {
 			return ExitFailed, err

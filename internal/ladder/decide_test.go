@@ -255,6 +255,31 @@ func TestDecide(t *testing.T) {
 			reReviewed(pr, owner, 5)
 		}), Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictReady}},
 
+		// The maintainer asked while a review ran: its fetch read the pull request at
+		// minute 2, the ask came at 3, the hold posted at 4, and the publisher handed
+		// the label back at 5 (removed and put back as the reviewer).
+		{"asked while the review ran: the reviewer handed the label back", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 4)}
+			reReviewed(pr, owner, 3)
+			pr.LabelEvents = append(pr.LabelEvents,
+				LabelEvent{Label: "re-review", Actor: reviewer, Added: false, At: at(5)},
+				LabelEvent{Label: "re-review", Actor: reviewer, Added: true, At: at(5)})
+		}), Decision{Work: WorkReview, Reason: "re-review"}},
+		{"the reviewer's label with no ask of the maintainer's before it", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 1)}
+			reReviewed(pr, reviewer, 5)
+		}), Decision{Work: WorkNone, Reason: "verdict-held", Verdict: VerdictHeld}},
+		{"the reviewer handed the label back before a newer review posted", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 1), verdictStatus(VerdictReady, 9)}
+			reReviewed(pr, owner, 3)
+			reReviewed(pr, reviewer, 5)
+		}), Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictReady}},
+		{"a stranger's ask handed back is still nobody's", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 4)}
+			reReviewed(pr, "someone-else", 3)
+			reReviewed(pr, reviewer, 5)
+		}), Decision{Work: WorkNone, Reason: "verdict-held", Verdict: VerdictHeld}},
+
 		// Which record wins.
 		{"the status is newer than the comment", builderPR(func(pr *PullRequest) {
 			pr.Comments = []Comment{reviewComment(head, VerdictChanges, 1)}
@@ -495,5 +520,46 @@ func TestLatest(t *testing.T) {
 	}
 	if got := latest(at(2), at(1)); !got.Equal(at(2)) {
 		t.Errorf("latest(later, earlier) = %v", got)
+	}
+}
+
+// publish-review asks whether the maintainer put the label on after its fetch
+// read the pull request: only then is the ask still owed a review.
+func TestReReviewAskedAfter(t *testing.T) {
+	readAt := at(5)
+	cases := []struct {
+		name   string
+		events []LabelEvent
+		want   bool
+	}{
+		{"no events", nil, false},
+		{"the maintainer's ask before the read", []LabelEvent{{Label: "re-review", Actor: owner, Added: true, At: at(3)}}, false},
+		{"the maintainer's ask at the read", []LabelEvent{{Label: "re-review", Actor: owner, Added: true, At: at(5)}}, false},
+		{"the maintainer's ask after the read", []LabelEvent{{Label: "re-review", Actor: owner, Added: true, At: at(6)}}, true},
+		{"an ask before, removed and asked again after", []LabelEvent{
+			{Label: "re-review", Actor: owner, Added: true, At: at(3)},
+			{Label: "re-review", Actor: owner, Added: false, At: at(6)},
+			{Label: "Re-Review", Actor: "OCTO-MAINTAINER", Added: true, At: at(7)},
+		}, true},
+		{"the maintainer asked after the read, then took it off", []LabelEvent{
+			{Label: "re-review", Actor: owner, Added: true, At: at(6)},
+			{Label: "re-review", Actor: owner, Added: false, At: at(7)},
+		}, false},
+		{"a stranger's label after the read", []LabelEvent{{Label: "re-review", Actor: "someone-else", Added: true, At: at(6)}}, false},
+		{"the reviewer's own label after the read", []LabelEvent{{Label: "re-review", Actor: reviewer, Added: true, At: at(6)}}, false},
+		{"the maintainer removed it after the read", []LabelEvent{{Label: "re-review", Actor: owner, Added: false, At: at(6)}}, false},
+		{"another label of the maintainer's after the read", []LabelEvent{{Label: "hold", Actor: owner, Added: true, At: at(6)}}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := policy.ReReviewAskedAfter(c.events, readAt); got != c.want {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+	nobody := policy
+	nobody.Maintainer = ""
+	if nobody.ReReviewAskedAfter([]LabelEvent{{Label: "re-review", Actor: owner, Added: true, At: at(6)}}, readAt) {
+		t.Error("with no maintainer configured, an ask counted")
 	}
 }

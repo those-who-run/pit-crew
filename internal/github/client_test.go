@@ -467,6 +467,21 @@ func TestRemoveLabel(t *testing.T) {
 	}
 }
 
+func TestAddLabel(t *testing.T) {
+	f, c := newFake(t)
+	f.json("POST", "/repos/those-who-run/ecu/issues/31/labels", `[{"name": "parity"}, {"name": "re-review"}]`)
+	if err := c.AddLabel(t.Context(), "those-who-run/ecu", 31, "re-review"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(f.requests, []string{"POST /repos/those-who-run/ecu/issues/31/labels"}) || !reflect.DeepEqual(f.bodies, []string{`{"labels":["re-review"]}`}) {
+		t.Errorf("requests %v, bodies %v", f.requests, f.bodies)
+	}
+	f.failFirst, f.failStatus = 1, http.StatusForbidden
+	if err := c.AddLabel(t.Context(), "those-who-run/ecu", 31, "re-review"); !IsStatus(err, http.StatusForbidden) {
+		t.Errorf("error %v, want the 403", err)
+	}
+}
+
 func TestCompare(t *testing.T) {
 	f, c := newFake(t)
 	f.json("GET", "/repos/those-who-run/ecu/compare/main...agent/232-x", `{"status": "ahead", "ahead_by": 2, "behind_by": 0,

@@ -274,6 +274,17 @@ func (c *Client) RemoveLabel(ctx context.Context, repo string, number int, name 
 	return err
 }
 
+// AddLabel puts a label on an issue or a pull request. GitHub records a
+// `labeled` event for it, by the token's account, only when the label was not
+// already there.
+func (c *Client) AddLabel(ctx context.Context, repo string, number int, name string) error {
+	path, err := repoPath(repo)
+	if err != nil {
+		return err
+	}
+	return c.post(ctx, fmt.Sprintf("%s/issues/%d/labels", path, number), map[string][]string{"labels": {name}}, nil)
+}
+
 // Status is one commit status.
 type Status struct {
 	Context     string
