@@ -325,7 +325,10 @@ func TestBuild(t *testing.T) {
 		t.Errorf("task %+v", task)
 	}
 	statement := read(t, filepath.Join(dir, DataDir, "task.md"))
-	for _, want := range []string{"Kind: build", "those-who-run/paddock#232", "twr-dev/SKILL.md", "pr-title.txt", "Closes those-who-run/paddock#232."} {
+	for _, want := range []string{
+		"Kind: build", "those-who-run/paddock#232", "twr-dev/SKILL.md", "pr-title.txt", "Closes those-who-run/paddock#232.",
+		"## What changed", "## How it was checked", "| Criterion | Proof | Where |", "Part of those-who-run/paddock#232 (",
+	} {
 		if !strings.Contains(statement, want) {
 			t.Errorf("task.md lacks %q", want)
 		}

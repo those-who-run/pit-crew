@@ -98,6 +98,32 @@ var DefaultProtected = []string{".claude/**", "**/CODEOWNERS"}
 // ToolTrailer is the one line that may follow a pull request body's last line.
 const ToolTrailer = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
+// BuildBodyForm is the pull request body a build must write, with its placeholders
+// in angle brackets. The fetch step puts it in the build's task, so the agent has
+// the form in front of it, and it lives here so that the form and the checks that
+// refuse any other form can't drift apart.
+func BuildBodyForm(issueRepo string, issue int) string {
+	return fmt.Sprintf(`## What changed
+
+<what the change does, in a few plain sentences or bullets>
+
+AI assistance: <the tool, and what it did>
+
+New direct dependencies: none <or each one, with the reason for it>
+
+## How it was checked
+
+| Criterion | Proof | Where |
+|---|---|---|
+| AC1 <short name> | <unit, recording, parity, e2e, live or car> | <the test or the command> |
+
+- [x] The command that matches CI (`+"`make check`"+`) is green
+- [x] Docs updated, or none needed because: <reason>
+
+Closes %s#%d.
+`, issueRepo, issue)
+}
+
 var (
 	branchRE = regexp.MustCompile(`^agent/([1-9][0-9]*)-[a-z0-9]+(?:-[a-z0-9]+)*$`)
 	titleRE  = regexp.MustCompile(`^(?:feat|fix|perf|revert|deps|docs|refactor|test|build|ci|chore|style)(?:\([a-z0-9._/-]+\))?!?: \S.*$`)

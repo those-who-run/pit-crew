@@ -406,7 +406,7 @@ what was not.
 | Kind | Files |
 |---|---|
 | review | `verdict.json` (always), `comment.md` (kind A always; B to D when something is wrong), `private.md` (only when needed), as the reviewer's brief defines them |
-| build | `pr-title.txt` (one line, a Conventional Commit), `pr-body.md` (the template as `twr-pr-ready` writes it, ending with the issue line); the commits are on the branch in `/work/repo` |
+| build | `pr-title.txt` (one line, a Conventional Commit), `pr-body.md` (the template as `twr-pr-ready` writes it, ending with the issue line; `task.md` carries the form the publisher accepts); the commits are on the branch in `/work/repo` |
 | fix | `answer.md` (as `twr-fix-review` writes it, without a marker); `pr-body.md` only when the evidence table changed; the commits on the branch |
 
 `twr-claude run` adds `agent.json`, its own summary of the run, and `agent.md`,
