@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/those-who-run/pit-crew/compare/v0.1.2...v0.1.3) (2026-11-08)
+
+
+### Features
+
+* **ladder:** the re-review label re-opens a held review ([#8](https://github.com/those-who-run/pit-crew/issues/8)) ([e2bedb2](https://github.com/those-who-run/pit-crew/commit/e2bedb271f43331eb5fc734514d4cbbc8cca793a))
+
 ## [0.1.2](https://github.com/those-who-run/pit-crew/compare/v0.1.1...v0.1.2) (2026-11-07)
 
 
