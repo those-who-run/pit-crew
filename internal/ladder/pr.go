@@ -111,8 +111,10 @@ type Decision struct {
 }
 
 // Skipped reports why a pull request is outside the ladder altogether, or "" when it
-// is in. A skipped pull request gets no comment and no status, so a stranger cannot
-// use the reviewer as a reply channel.
+// is in. One the poller skips here gets no Job, so no comment and no status, and a
+// stranger cannot use the reviewer as a reply channel. This is not the reviewer's
+// `skipped` verdict: that is a review Job's answer, recorded as a status on the head
+// like any other verdict.
 func (p Policy) Skipped(pr PullRequest) string {
 	committers := p.Committers
 	if len(committers) == 0 {

@@ -58,7 +58,8 @@ func TestCheckReviewPosts(t *testing.T) {
 				StatusState: "success", StatusDescription: "ready: kind D, lane standard"}},
 		{"skipped, with the reason the brief asks for", ReviewFiles{Verdict: []byte(`{"repo": "those-who-run/ecu", "pr": 31, "sha": "` + head +
 			`", "verdict": "skipped", "reason": "author outside the list"}`)},
-			ReviewResult{Outcome: ReviewPost, Verdict: ladder.VerdictSkipped, StatusState: "error", StatusDescription: "skipped"}},
+			ReviewResult{Outcome: ReviewPost, Verdict: ladder.VerdictSkipped, StatusState: "success", StatusDescription: "skipped",
+				Reason: "author outside the list"}},
 		{"blocked before the kind was known", ReviewFiles{Verdict: []byte(`{"repo": "those-who-run/ecu", "pr": 31, "sha": "` + head +
 			`", "kind": "", "lane": "", "verdict": "blocked", "blocking": [], "ran": [], "not_run": ["the head kept moving"]}`)},
 			ReviewResult{Outcome: ReviewPost, Verdict: ladder.VerdictBlocked, StatusState: "error", StatusDescription: "blocked"}},

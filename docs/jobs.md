@@ -432,6 +432,13 @@ the comment is created, or updated when the reviewer already commented on this
 head, ending in the marker with the verdict; `review / verdict` is set; exit 0.
 `private.md`, when present, always goes to the hold directory and never to GitHub.
 
+The status's state is `success` for `ready`, `nits` and `skipped`, `failure` for
+`changes`, and `error` for `blocked` and `held`. Its description starts with the
+verdict, and that word, not the state, is what the ladder reads: a `skipped` head
+is green but never reaches `ladder / ready`. A `reason` in `verdict.json` goes to
+the Job's log and nowhere else, as one value with anything unprintable replaced,
+cut at 500 bytes.
+
 A held review stays held: the `held` status is a review record at that head, so
 the poller's decision for the pull request is `verdict-held` and no review Job
 starts again until the head moves. That is deliberate for a hold on a private
