@@ -128,16 +128,23 @@ func TestStepsStopOnConfiguration(t *testing.T) {
 }
 
 // With an App configured but no key file, the token cannot be minted and the
-// step still stops before any step-specific work.
+// step still stops before any step-specific work: FETCH_DIR, which the step
+// would fill first, stays empty. The directory is the test's own, never the
+// default /work, where the reviewer Job's own checkout of this repository lives.
 func TestStepsStopWhenTheKeyIsMissing(t *testing.T) {
+	work := t.TempDir()
 	keyless := map[string]string{"APP_CLIENT_ID": "Iv1.x", "APP_KEY_FILE": filepath.Join(t.TempDir(), "none.pem"),
 		"GITHUB_API_URL": "http://127.0.0.1:1", "FETCH_KIND": "build", "FETCH_REPO": "o/r", "FETCH_ISSUE": "1", "FETCH_ISSUE_REPO": "o/p",
-		"FETCH_AGENT_REF": "v1", "FETCH_BUILDER_NAME": "b", "FETCH_BUILDER_EMAIL": "b@example.com"}
+		"FETCH_AGENT_REF": "v1", "FETCH_BUILDER_NAME": "b", "FETCH_BUILDER_EMAIL": "b@example.com", "FETCH_DIR": work}
 	var stderr bytes.Buffer
-	if code := run(t.Context(), []string{"fetch"}, env(keyless), strings.NewReader(""), &bytes.Buffer{}, &stderr); code != 2 {
+	if code := run(t.Context(), []string{"fetch"}, env(keyless), strings.NewReader(""), &bytes.Buffer{}, &stderr); code != 2 || !strings.Contains(stderr.String(), "APP_KEY_FILE") {
 		t.Errorf("exit %d, stderr %q", code, stderr.String())
 	}
-	if _, err := os.Stat("/work"); err == nil {
-		t.Error("the step wrote to /work")
+	entries, err := os.ReadDir(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		t.Errorf("the step wrote %s to FETCH_DIR", e.Name())
 	}
 }
