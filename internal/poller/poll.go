@@ -133,6 +133,9 @@ type Heartbeat struct {
 	PlanLimitUntil    string   `json:"plan_limit_until"`
 	LoginExpiredUntil string   `json:"login_expired_until"`
 	Errors            int      `json:"errors"`
+	// GitHubUnavailable is true for a run that read nothing because GitHub
+	// answered 5xx or timed out after the client's retries; it started nothing.
+	GitHubUnavailable bool `json:"github_unavailable"`
 }
 
 // Poller is one run's dependencies.
@@ -171,18 +174,19 @@ type unit struct {
 }
 
 // Run makes one pass: reads, decides, starts at most one Job, and writes the
-// heartbeat. It returns an error only when nothing could be read at all.
+// heartbeat. It returns an error only when nothing could be read at all, and
+// GitHub being unavailable is not one (see Unavailable).
 func (p *Poller) Run(ctx context.Context) (Heartbeat, error) {
 	now := p.now()
 	hb := Heartbeat{At: now.UTC(), Decisions: map[string]int{}, Reasons: map[string]int{}}
 	pulls, errs, err := Pulls(ctx, p.Source, p.Policies, p.Logger)
 	if err != nil {
-		return hb, err
+		return p.Unavailable(ctx, err)
 	}
 	hb.Errors += errs
 	issues, errs, err := Issues(ctx, p.Source, p.Policies, p.Logger)
 	if err != nil {
-		return hb, err
+		return p.Unavailable(ctx, err)
 	}
 	hb.Errors += errs
 	hb.Pulls, hb.Issues = len(pulls), len(issues)
@@ -213,6 +217,23 @@ func (p *Poller) Run(ctx context.Context) (Heartbeat, error) {
 	if hb.Gate == "" && len(due) > 0 {
 		p.start(ctx, due, &hb)
 	}
+	p.heartbeat(ctx, hb)
+	return hb, nil
+}
+
+// Unavailable ends a run that could not read GitHub. When GitHub answered 5xx or
+// timed out after the client's retries, it is GitHub's outage, not the poller's
+// failure: the run logs it, writes a heartbeat with github_unavailable and an
+// error, starts nothing, and returns no error, so the CronJob's Job succeeds and
+// the next run tries again. Any other error (a refused token, a bad
+// configuration) is returned as it is, with no heartbeat, as before.
+func (p *Poller) Unavailable(ctx context.Context, err error) (Heartbeat, error) {
+	hb := Heartbeat{At: p.now().UTC(), Decisions: map[string]int{}, Reasons: map[string]int{}}
+	if !github.Unavailable(err) {
+		return hb, err
+	}
+	p.Logger.WarnContext(ctx, "github unavailable: nothing read, nothing started", "err", err.Error())
+	hb.GitHubUnavailable, hb.Errors = true, 1
 	p.heartbeat(ctx, hb)
 	return hb, nil
 }

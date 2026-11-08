@@ -152,6 +152,10 @@ func laneCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) (int,
 	return 0, nil
 }
 
+// githubSleep is the GitHub client's wait between retries; nil is the real
+// clock. The tests set it so an outage's retries take no time.
+var githubSleep func(context.Context, time.Duration) error
+
 // client mints the step's token and returns a GitHub client with it.
 func client(ctx context.Context, getenv func(string) string, owner string, repos []string, permissions apptoken.Permissions, logger *slog.Logger) (*github.Client, error) {
 	cfg, err := apptoken.FromEnv(getenv, owner)
@@ -163,7 +167,7 @@ func client(ctx context.Context, getenv func(string) string, owner string, repos
 	if _, err := os.Stat(cfg.KeyPath); err != nil {
 		return nil, fmt.Errorf("APP_KEY_FILE: %w", err)
 	}
-	gh := &github.Client{BaseURL: getenv("GITHUB_API_URL"), Logger: logger}
+	gh := &github.Client{BaseURL: getenv("GITHUB_API_URL"), Logger: logger, Sleep: githubSleep}
 	// The pod's network may not be up yet: wait for it before the first real call.
 	if err := gh.WaitForNetwork(ctx); err != nil {
 		return nil, err
@@ -187,7 +191,12 @@ func pollCommand(ctx context.Context, getenv func(string) string, logger *slog.L
 	}
 	gh, err := client(ctx, getenv, policies.Build.Owner, nil, apptoken.Permissions{"metadata": "read", "contents": "read", "pull_requests": "read", "issues": "read"}, logger)
 	if err != nil {
-		return 2, err
+		// GitHub down (5xx or a timeout, after the retries) is not the poller's
+		// failure: a heartbeat says so, nothing starts, and the run exits 0.
+		if _, err := (&poller.Poller{Limits: limits, Logger: logger}).Unavailable(ctx, err); err != nil {
+			return 2, err
+		}
+		return 0, nil
 	}
 	jobs, err := kube.New(kube.Config{APIURL: getenv("POLL_KUBE_API"), TokenFile: getenv("POLL_KUBE_TOKEN_FILE"), CAFile: getenv("POLL_KUBE_CA_FILE"), Namespace: getenv("POLL_NAMESPACE")}, getenv)
 	if err != nil {

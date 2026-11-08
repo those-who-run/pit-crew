@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -55,6 +56,23 @@ type Error struct {
 
 func (e *Error) Error() string {
 	return fmt.Sprintf("github: %s %s: %d %s", e.Method, e.Path, e.Status, e.Message)
+}
+
+// HTTPStatus is the status GitHub answered with.
+func (e *Error) HTTPStatus() int { return e.Status }
+
+// Unavailable reports whether err means GitHub itself was not answering: a 5xx
+// response, or a request that timed out. A 4xx (a refused token, a missing
+// repository), a connection refused or a name that does not resolve is not:
+// those are the caller's to fix. It reads any error in the chain that has an
+// HTTPStatus method, so the App token's errors count too.
+func Unavailable(err error) bool {
+	var status interface{ HTTPStatus() int }
+	if errors.As(err, &status) {
+		return status.HTTPStatus() >= 500 && status.HTTPStatus() <= 599
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // IsStatus reports whether err is a GitHub response with the given status.

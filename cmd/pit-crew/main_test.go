@@ -2,10 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func env(vars map[string]string) func(string) string {
@@ -139,5 +148,74 @@ func TestStepsStopWhenTheKeyIsMissing(t *testing.T) {
 	}
 	if _, err := os.Stat("/work"); err == nil {
 		t.Error("the step wrote to /work")
+	}
+}
+
+// The incident: GitHub answers 5xx (GET /rate_limit, the poller's first call, or
+// the token's mint) through every retry. `pit-crew poll` logs it, writes the
+// heartbeat with github_unavailable, starts nothing and exits 0, so the CronJob's
+// Job does not fail. A 4xx is a real failure and still exits non-zero.
+func TestPollExitsZeroWhenGitHubIsDown(t *testing.T) {
+	githubSleep = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() { githubSleep = nil })
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyFile := filepath.Join(t.TempDir(), "private-key.pem")
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name         string
+		rateLimit    int
+		installation int
+		want         int
+		unavailable  bool
+	}{
+		{"504 on /rate_limit through every retry", http.StatusGatewayTimeout, 0, 0, true},
+		{"503 minting the token", http.StatusOK, http.StatusServiceUnavailable, 0, true},
+		{"401 minting the token", http.StatusOK, http.StatusUnauthorized, 2, false},
+		{"404 on /rate_limit", http.StatusNotFound, 0, 2, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var calls []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				calls = append(calls, r.Method+" "+r.URL.Path)
+				mu.Unlock()
+				switch r.URL.Path {
+				case "/rate_limit":
+					w.WriteHeader(c.rateLimit)
+					_, _ = w.Write([]byte(`{"resources": {}}`))
+				case "/orgs/those-who-run/installation":
+					w.WriteHeader(c.installation)
+					_, _ = w.Write([]byte(`{"message": "no"}`))
+				default:
+					t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusTeapot)
+				}
+			}))
+			defer server.Close()
+			heartbeat := filepath.Join(t.TempDir(), "heartbeat.json")
+			vars := map[string]string{"APP_CLIENT_ID": "Iv1.x", "APP_KEY_FILE": keyFile, "GITHUB_API_URL": server.URL,
+				"POLL_HEARTBEAT_FILE": heartbeat}
+			var stdout, stderr bytes.Buffer
+			code := run(t.Context(), []string{"poll"}, env(vars), strings.NewReader(""), &stdout, &stderr)
+			mu.Lock()
+			defer mu.Unlock()
+			if code != c.want {
+				t.Errorf("exit %d, want %d; stderr %q; calls %q", code, c.want, stderr.String(), calls)
+			}
+			data, _ := os.ReadFile(heartbeat) //nolint:gosec // the test's temp dir
+			if got := strings.Contains(string(data), `"github_unavailable":true`); got != c.unavailable {
+				t.Errorf("heartbeat %q", data)
+			}
+			if c.unavailable && !strings.Contains(stdout.String(), "github unavailable") {
+				t.Errorf("log %q", stdout.String())
+			}
+		})
 	}
 }

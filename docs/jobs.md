@@ -252,12 +252,27 @@ One JSON object per run, logged, POSTed to `POLL_HEARTBEAT_URL` and written to
  "decisions": {"review": 1, "fix": 0, "ready": 2, "none": 11, "build": 0},
  "reasons": {"author-not-allowlisted": 6, "no-review-at-head": 1, "verdict-and-checks": 2},
  "started": "review-ecu-31-1f0c5d2e-f0", "gate": "", "active": 0, "today": 3,
- "plan_limit_until": "", "login_expired_until": "", "errors": 0}
+ "plan_limit_until": "", "login_expired_until": "", "errors": 0,
+ "github_unavailable": false}
 ```
 
 `gate` names the gate that stopped a start (`quiet`, `backoff`, `cap`, `active`,
 `idle`, `dry-run`), or is empty. The maintainer's alerting reads it; the ladder
 does not.
+
+`github_unavailable` is `true` for a run that read nothing because GitHub was
+down: a call answered 5xx, or timed out, after the client's retries (five, with
+backoff, for a read; none for the token's mint). That covers the first call,
+`GET /rate_limit`, the token's mint and the first list. Such a run logs a
+warning, writes this heartbeat with `errors: 1` and nothing else counted, starts
+nothing, and exits 0, so a GitHub incident does not fail the CronJob's Job; the
+next scheduled run tries again. Alerting that should notice an outage that
+lasts reads this field.
+
+Exit codes of `pit-crew poll`: 0 the run finished, GitHub being unavailable
+included; 2 configuration, a missing App key, or GitHub refusing the App (a 4xx
+while minting the token or on the first call); 1 anything else that stopped the
+run (a 4xx listing the installation's repositories or the issues, for one).
 
 ### RBAC
 

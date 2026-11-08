@@ -205,6 +205,23 @@ func request(ctx context.Context, client *http.Client, method, url, jwt string, 
 	return resp, nil
 }
 
+// Error is a response GitHub answered with a status outside 2xx while the token
+// was minted. Its text has the status and GitHub's message, which names no
+// credential.
+type Error struct {
+	Method  string
+	Path    string
+	Status  int
+	Message string
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("apptoken: %s %s: %d %s: %s", e.Method, e.Path, e.Status, http.StatusText(e.Status), e.Message)
+}
+
+// HTTPStatus is the status GitHub answered with, for github.Unavailable.
+func (e *Error) HTTPStatus() int { return e.Status }
+
 // decode reads a JSON response, and on a non-2xx status returns an error with the
 // status and GitHub's message, which names no credential.
 func decode(resp *http.Response, into any) error {
@@ -218,7 +235,7 @@ func decode(resp *http.Response, into any) error {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(data, &problem)
-		return fmt.Errorf("apptoken: %s %s: %s: %s", resp.Request.Method, resp.Request.URL.Path, resp.Status, problem.Message)
+		return &Error{Method: resp.Request.Method, Path: resp.Request.URL.Path, Status: resp.StatusCode, Message: problem.Message}
 	}
 	if err := json.Unmarshal(data, into); err != nil {
 		return fmt.Errorf("apptoken: %s: %w", resp.Request.URL.Path, err)

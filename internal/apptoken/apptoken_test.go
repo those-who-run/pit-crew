@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -220,6 +221,16 @@ func TestMintErrors(t *testing.T) {
 				t.Errorf("error %v, want one containing %q", err, c.want)
 			}
 		})
+	}
+	// GitHub's answer keeps its status, so the poller can tell GitHub being down
+	// (5xx) from the App being refused (4xx).
+	for _, status := range []int{http.StatusNotFound, http.StatusServiceUnavailable} {
+		fake.installationStatus, fake.tokenStatus = 0, status
+		_, err := Mint(t.Context(), server.Client(), Config{ClientID: fake.clientID, KeyPath: good, APIURL: server.URL}, []string{"those-who-run/ecu"}, nil)
+		var e *Error
+		if !errors.As(err, &e) || e.HTTPStatus() != status || !strings.Contains(err.Error(), fmt.Sprintf("%d %s", status, http.StatusText(status))) {
+			t.Errorf("status %d: error %v", status, err)
+		}
 	}
 }
 
