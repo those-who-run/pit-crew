@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.4](https://github.com/those-who-run/pit-crew/compare/v0.1.3...v0.1.4) (2026-11-08)
+
+
+### Bug Fixes
+
+* **fetch:** give a build's task the pull request body form ([#15](https://github.com/those-who-run/pit-crew/issues/15)) ([175af0b](https://github.com/those-who-run/pit-crew/commit/175af0b366c0a0c649d98974e771ee600adf0b41))
+* **poller:** a GitHub outage is not a failed poll ([#13](https://github.com/those-who-run/pit-crew/issues/13)) ([134f84e](https://github.com/those-who-run/pit-crew/commit/134f84ed1e4e9da7c4ced96a8494d8c125206d68))
+* **review:** a skipped review is green, and its reason is logged ([#14](https://github.com/those-who-run/pit-crew/issues/14)) ([042d390](https://github.com/those-who-run/pit-crew/commit/042d3901291ba4935ced3f4376891059e28c2c51))
+* **review:** keep a re-review asked while the review ran ([#11](https://github.com/those-who-run/pit-crew/issues/11)) ([8175967](https://github.com/those-who-run/pit-crew/commit/81759677cbdd921a90b5a4aa6dd5b5b460298a07))
+
 ## [0.1.3](https://github.com/those-who-run/pit-crew/compare/v0.1.2...v0.1.3) (2026-11-08)
 
 
