@@ -135,6 +135,10 @@ func run(ctx context.Context, cfg Config, gh GitHub, logger *slog.Logger) (int, 
 		}
 		logger.InfoContext(ctx, "held", "repo", cfg.Repo, "number", cfg.Number, "dir", dir, "codes", strings.Join(publish.Codes(result.Refusals), ","))
 	}
+	if result.Reason != "" {
+		// The model's words, as a value: the Job's log is the only place they go.
+		logger.InfoContext(ctx, "review reason", "repo", cfg.Repo, "number", cfg.Number, "verdict", string(result.Verdict), "reason", result.Reason)
+	}
 	if result.Outcome == publish.ReviewPost && result.Body != "" {
 		if err := post(ctx, cfg, gh, result.Body); err != nil {
 			return steps.ExitFailed, err

@@ -103,7 +103,7 @@ func TestVerdictStatus(t *testing.T) {
 		state   string
 	}{
 		{VerdictReady, "success"}, {VerdictNits, "success"}, {VerdictChanges, "failure"},
-		{VerdictBlocked, "error"}, {VerdictSkipped, "error"}, {VerdictHeld, "error"},
+		{VerdictBlocked, "error"}, {VerdictSkipped, "success"}, {VerdictHeld, "error"},
 	}
 	for _, c := range cases {
 		if got := c.verdict.StatusState(); got != c.state {

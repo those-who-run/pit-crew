@@ -59,12 +59,14 @@ func ParseVerdict(word string) (Verdict, bool) {
 	return "", false
 }
 
-// StatusState is the commit status state that records a verdict: success lets the
-// pull request go on to ready, failure asks for changes, and error means the review
-// reached no conclusion.
+// StatusState is the commit status state that records a verdict: success means the
+// review has nothing against the pull request, failure asks for changes, and error
+// means the review reached no conclusion. A skip is deliberate, so it is green, but
+// it is not an approval: the ladder reads the verdict from the description, never
+// the state, and only ready and nits go on to ready.
 func (v Verdict) StatusState() string {
 	switch v {
-	case VerdictReady, VerdictNits:
+	case VerdictReady, VerdictNits, VerdictSkipped:
 		return "success"
 	case VerdictChanges:
 		return "failure"

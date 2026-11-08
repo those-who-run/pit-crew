@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/those-who-run/pit-crew/internal/ladder"
 	"github.com/those-who-run/pit-crew/internal/lanes"
@@ -42,6 +44,10 @@ type VerdictFile struct {
 	Blocking []string       `json:"blocking"`
 	Ran      []string       `json:"ran"`
 	NotRun   []string       `json:"not_run"`
+	// Reason is the model's own account of a skip. It goes to the Job's log and
+	// nowhere else, and it is left raw so a reason of the wrong type cannot hold a
+	// review: see logReason.
+	Reason json.RawMessage `json:"reason"`
 }
 
 // ReviewOutcome is what the review poster does with a review.
@@ -73,9 +79,15 @@ type ReviewResult struct {
 	// StatusState and StatusDescription are the `review / verdict` status to set.
 	StatusState       string
 	StatusDescription string
+	// Reason is the reviewer's reason, fit for one log value, or empty. It is the
+	// model's words, so it never goes in the status or a comment.
+	Reason string
 	// Refusals say why a review is held.
 	Refusals []Refusal
 }
+
+// MaxLogReasonBytes is how much of the reviewer's reason reaches the Job's log.
+const MaxLogReasonBytes = 500
 
 var (
 	kindRE = regexp.MustCompile(`^[A-D]$`)
@@ -116,6 +128,7 @@ func CheckReview(task ReviewTask, currentHead string, files ReviewFiles, scanner
 		Lane:              verdict.Lane,
 		StatusState:       verdict.Verdict.StatusState(),
 		StatusDescription: verdict.Verdict.StatusDescription(statusDetail(verdict)),
+		Reason:            logReason(verdict.Reason),
 	}
 	if files.Comment != nil {
 		// The reviewer's marker is replaced by the same marker with the verdict, so
@@ -141,6 +154,31 @@ func statusDetail(v VerdictFile) string {
 		parts = append(parts, "lane "+v.Lane)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// logReason makes the model's reason safe to log as one value: a reason that is not
+// a JSON string is kept as written, everything unprintable becomes a space, so a
+// newline or a terminal escape cannot forge a line, and it is cut at
+// MaxLogReasonBytes, on a rune boundary.
+func logReason(raw json.RawMessage) string {
+	var reason string
+	if err := json.Unmarshal(raw, &reason); err != nil {
+		reason = string(raw)
+	}
+	reason = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return ' '
+	}, reason))
+	if len(reason) <= MaxLogReasonBytes {
+		return reason
+	}
+	cut := MaxLogReasonBytes
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut] + " [truncated]"
 }
 
 func checkVerdict(task ReviewTask, raw []byte) (VerdictFile, []Refusal) {
