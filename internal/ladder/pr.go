@@ -2,6 +2,7 @@ package ladder
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,12 @@ type Policy struct {
 	Committers []string
 	// HoldLabel pauses a pull request or an issue.
 	HoldLabel string
+	// Maintainer is the login whose ReReviewLabel asks for a head to be reviewed
+	// again. Nobody else's does.
+	Maintainer string
+	// ReReviewLabel, applied by the maintainer after the review record at the head,
+	// counts the head as unreviewed once more.
+	ReReviewLabel string
 }
 
 // Commit is one commit of a pull request, with the logins GitHub maps its author
@@ -65,8 +72,11 @@ type PullRequest struct {
 	HeadSHA  string
 	Draft    bool
 	Labels   []string
-	Commits  []Commit
-	Comments []Comment
+	// LabelEvents are the times a label was added to or removed from the pull
+	// request, with who did it; read only when a label that needs them is on.
+	LabelEvents []LabelEvent
+	Commits     []Commit
+	Comments    []Comment
 	// Statuses are the commit statuses on HeadSHA.
 	Statuses []Status
 	// Checks is the state of each check on HeadSHA by name, check runs and commit
@@ -115,7 +125,7 @@ func (p Policy) Skipped(pr PullRequest) string {
 		return "fork"
 	case pr.Draft:
 		return "draft"
-	case p.HoldLabel != "" && hasLabel(pr.Labels, p.HoldLabel):
+	case p.HoldLabel != "" && HasLabel(pr.Labels, p.HoldLabel):
 		return "hold"
 	case !IsSHA(pr.HeadSHA):
 		return "no-head"
@@ -208,6 +218,32 @@ func (p Policy) FixRounds(pr PullRequest) (rounds int, last time.Time) {
 	return len(seen), last
 }
 
+// reReviewAsked reports whether the maintainer asked for the head to be reviewed
+// again: the pull request carries the re-review label, the event that put it there
+// is the maintainer's, and it is newer than the review record at the head. The
+// label from any other account changes nothing, and nor does one applied before
+// the review, which that review already answered.
+func (p Policy) reReviewAsked(pr PullRequest, reviewedAt time.Time) bool {
+	if p.ReReviewLabel == "" || !HasLabel(pr.Labels, p.ReReviewLabel) {
+		return false
+	}
+	event, ok := labelledAt(pr.LabelEvents, p.ReReviewLabel)
+	return ok && sameLogin(event.Actor, p.Maintainer) && event.At.After(reviewedAt)
+}
+
+// ReReviews returns how many times the maintainer has put the re-review label on
+// the pull request. The poller names a re-review Job by it, so each ask gets a Job
+// of its own while the first review's Job at the same head is still there.
+func (p Policy) ReReviews(pr PullRequest) int {
+	n := 0
+	for _, event := range pr.LabelEvents {
+		if event.Added && strings.EqualFold(event.Label, p.ReReviewLabel) && sameLogin(event.Actor, p.Maintainer) {
+			n++
+		}
+	}
+	return n
+}
+
 // ChecksGreen reports whether every required check on the head is green, and if not
 // a word for why. With no required checks known, every check reported must be green
 // and there must be at least one: an empty list never passes by default. The
@@ -243,7 +279,8 @@ func ChecksGreen(pr PullRequest) (bool, string) {
 // Decide says what is due on one open pull request.
 //
 //   - review: the pull request is in the ladder and has no review record at its head,
-//     or the builder has answered since the last one.
+//     the maintainer has asked for the head again with the re-review label, or the
+//     builder has answered since the last one.
 //   - fix: a builder's pull request whose verdict at the head is changes, with fewer
 //     than MaxFixRounds rounds answered.
 //   - stuck: the same, with the rounds used up.
@@ -257,6 +294,11 @@ func (p Policy) Decide(pr PullRequest) Decision {
 	record, reviewed := p.reviewAtHead(pr)
 	if !reviewed {
 		return Decision{Work: WorkReview, Reason: "no-review-at-head", Round: rounds}
+	}
+	if p.reReviewAsked(pr, record.at) {
+		// A held review, or one the maintainer wants a second look at: the label
+		// goes when the next review posts, so one label is one more run.
+		return Decision{Work: WorkReview, Reason: "re-review", Round: rounds}
 	}
 	if lastFix.After(record.at) {
 		// An answer that contests every item pushes nothing, so the head stays where

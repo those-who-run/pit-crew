@@ -43,7 +43,9 @@ type source struct {
 	checks   map[string]map[string]string
 	required map[string][]string
 	issues   []github.Issue
-	timeline map[int][]github.TimelineEvent
+	// timeline holds label events by repo#number, for issues and pull requests
+	// alike, as GitHub's issue timeline does.
+	timeline map[string][]github.TimelineEvent
 	branches map[string][]string
 	// broken makes one repository's pull list fail.
 	broken string
@@ -79,8 +81,8 @@ func (s *source) ListRequiredChecks(_ context.Context, repo, _ string) ([]string
 func (s *source) ListOpenIssues(context.Context, string, []string) ([]github.Issue, error) {
 	return s.issues, nil
 }
-func (s *source) ListTimeline(_ context.Context, _ string, n int) ([]github.TimelineEvent, error) {
-	return s.timeline[n], nil
+func (s *source) ListTimeline(_ context.Context, repo string, n int) ([]github.TimelineEvent, error) {
+	return s.timeline[key(repo, n)], nil
 }
 func (s *source) ListBranches(_ context.Context, repo, prefix string) ([]string, error) {
 	var out []string
@@ -167,7 +169,7 @@ func world() *source {
 		checks:   map[string]map[string]string{sha2: {"test": "success", "go / check": "success"}},
 		required: map[string][]string{ecu: {"test", "go / check"}},
 		issues:   []github.Issue{{Repo: "those-who-run/paddock", Number: 232, Title: "Fuel callout", Labels: []string{"component: ecu", "agent-ready"}}},
-		timeline: map[int][]github.TimelineEvent{232: {
+		timeline: map[string][]github.TimelineEvent{key("those-who-run/paddock", 232): {
 			{Event: "labeled", Actor: owner, Label: "agent-ready", At: at(-60)},
 		}},
 	}
@@ -175,7 +177,8 @@ func world() *source {
 
 func policies() Policies {
 	return Policies{
-		Pull: ladder.Policy{Reviewer: reviewer, Builder: builder, Authors: []string{builder, owner}, HoldLabel: "hold"},
+		Pull: ladder.Policy{Reviewer: reviewer, Builder: builder, Authors: []string{builder, owner}, HoldLabel: "hold",
+			Maintainer: owner, ReReviewLabel: "re-review"},
 		Build: ladder.BuildPolicy{Maintainer: owner, Builder: builder, Authors: []string{builder, owner}, ReadyLabel: "agent-ready",
 			TriageLabel: "needs triage", HoldLabel: "hold", ComponentPrefix: "component: ", Owner: "those-who-run",
 			Repos: []string{"those-who-run/ecu"}},
@@ -255,6 +258,75 @@ func TestRunStartsTheNextUnitWhenTheFirstExists(t *testing.T) {
 	}
 	if hb.Started != "review-ecu-31-1f0c5d2e-f0" || !reflect.DeepEqual(hb.Skipped, []string{"fix-logbook-7-r1"}) {
 		t.Errorf("started %q, skipped %v", hb.Started, hb.Skipped)
+	}
+}
+
+// heldWorld is one builder pull request whose review was held at its head two
+// hours ago; its Job is still there, as a finished Job is for its TTL.
+func heldWorld() (*source, *jobs) {
+	ecu := "those-who-run/ecu"
+	sha5 := "5555555555555555555555555555555555555555"
+	pr := pull(ecu, 28, builder, sha5)
+	pr.Labels = []string{"parity", "re-review"}
+	src := &source{
+		repos:    []string{ecu},
+		pulls:    map[string][]github.PullRequest{ecu: {pr}},
+		commits:  map[string][]github.Commit{key(ecu, 28): {{SHA: sha5, Author: builder, Committer: builder}}},
+		statuses: map[string][]github.Status{sha5: {{Context: ladder.StatusVerdict, State: "error", Description: "held: verdict-missing", Creator: reviewer, CreatedAt: at(-120)}}},
+		checks:   map[string]map[string]string{sha5: {"test": "success", "go / check": "success"}},
+		required: map[string][]string{ecu: {"test", "go / check"}},
+		timeline: map[string][]github.TimelineEvent{key(ecu, 28): {
+			{Event: "labeled", Actor: "someone-else", Label: "parity", At: at(-200)},
+			{Event: "labeled", Actor: owner, Label: "re-review", At: at(-30)},
+		}},
+	}
+	j := &jobs{list: []kube.Job{{Name: "review-ecu-28-55555555-f0", CreatedAt: at(-125), FinishedAt: at(-110), Labels: map[string]string{LabelComponent: "review"}}}}
+	return src, j
+}
+
+func TestTheMaintainersReReviewLabelStartsAReviewAgain(t *testing.T) {
+	src, j := heldWorld()
+	p := newPoller(t, src, j, Limits{StartJobs: true, TemplateDir: templates(t, "review"), MaxActive: 1})
+	hb, err := p.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hb.Reasons["re-review"] != 1 || hb.Decisions["review"] != 1 {
+		t.Errorf("heartbeat %+v", hb)
+	}
+	// The held review's Job is still there under the plain name, so the ask has
+	// a name of its own; the same ask on the next poll finds it and starts nothing.
+	if hb.Started != "review-ecu-28-55555555-f0-a1" || len(j.created) != 1 || len(hb.Skipped) != 0 {
+		t.Fatalf("started %q, created %d, skipped %v", hb.Started, len(j.created), hb.Skipped)
+	}
+	j.list = append(j.list, kube.Job{Name: hb.Started, Active: false, CreatedAt: at(0), Labels: map[string]string{LabelComponent: "review"}})
+	hb, _ = p.Run(t.Context())
+	if hb.Started != "" || !reflect.DeepEqual(hb.Skipped, []string{"review-ecu-28-55555555-f0-a1"}) {
+		t.Errorf("second poll started %q, skipped %v", hb.Started, hb.Skipped)
+	}
+}
+
+func TestAStrangersReReviewLabelChangesNothing(t *testing.T) {
+	for name, change := range map[string]func(*source){
+		"a stranger applied it": func(s *source) {
+			s.timeline[key("those-who-run/ecu", 28)][1].Actor = "someone-else"
+		},
+		"the maintainer applied it before the hold": func(s *source) {
+			s.timeline[key("those-who-run/ecu", 28)][1].At = at(-150)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src, j := heldWorld()
+			change(src)
+			p := newPoller(t, src, j, Limits{StartJobs: true, TemplateDir: templates(t, "review"), MaxActive: 1})
+			hb, err := p.Run(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hb.Reasons["verdict-held"] != 1 || hb.Started != "" || len(j.created) != 0 {
+				t.Errorf("heartbeat %+v", hb)
+			}
+		})
 	}
 }
 
@@ -604,7 +676,8 @@ func TestPoliciesFromEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.Pull.Reviewer != reviewer || p.Pull.Builder != builder || !reflect.DeepEqual(p.Pull.Authors, []string{builder, owner}) ||
-		!reflect.DeepEqual(p.Pull.Committers, []string{"web-flow"}) || p.Pull.HoldLabel != "hold" || p.IssueRepo != "those-who-run/paddock" {
+		!reflect.DeepEqual(p.Pull.Committers, []string{"web-flow"}) || p.Pull.HoldLabel != "hold" || p.IssueRepo != "those-who-run/paddock" ||
+		p.Pull.Maintainer != owner || p.Pull.ReReviewLabel != "re-review" {
 		t.Errorf("pull %+v, issue repo %s", p.Pull, p.IssueRepo)
 	}
 	if p.Build.Maintainer != owner || p.Build.ReadyLabel != "agent-ready" || p.Build.TriageLabel != "needs triage" || p.Build.Owner != "those-who-run" ||

@@ -24,7 +24,7 @@ model holds no GitHub credential.
 | 0 Spec | An issue triaged, then labelled `agent-ready` | The maintainer | The poller checks the label event's actor, and that `needs triage` and `hold` are absent |
 | 1 Build | One issue into one pull request, with the shared skills | A build Job, as `twr-builder` | `pit-crew fetch`, `twr-claude run`, `pit-crew publish-build` |
 | 2 CI | The repository's required checks | GitHub Actions | Read, never set |
-| 3 Review | An independent read at the head SHA | A review Job, as `twr-reviewer` | `pit-crew fetch`, `twr-claude run`, `pit-crew publish-review`: one marker comment per head and the status `review / verdict` |
+| 3 Review | An independent read at the head SHA | A review Job, as `twr-reviewer` | `pit-crew fetch`, `twr-claude run`, `pit-crew publish-review`: one marker comment per head and the status `review / verdict`; the maintainer's `re-review` label asks for the head again |
 | 3b Fix | The builder answers each item, the reviewer reads again | A fix Job | Two rounds at most, counted from markers; then `ladder / stuck` |
 | 4 Ready | Every required check green and the verdict `ready` or `nits` at the head | `pit-crew ready` | The status `ladder / ready` and the ready list |
 | 5 Merge | Approve, queue, land | The maintainer | Nothing here touches a merge |

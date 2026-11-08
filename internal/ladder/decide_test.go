@@ -6,10 +6,19 @@ import (
 )
 
 var policy = Policy{
-	Reviewer:  reviewer,
-	Builder:   builder,
-	Authors:   []string{builder, owner, "twr-release[bot]", "renovate[bot]"},
-	HoldLabel: "hold",
+	Reviewer:      reviewer,
+	Builder:       builder,
+	Authors:       []string{builder, owner, "twr-release[bot]", "renovate[bot]"},
+	HoldLabel:     "hold",
+	Maintainer:    owner,
+	ReReviewLabel: "re-review",
+}
+
+// reReviewed puts the re-review label on the pull request, added by actor some
+// minutes in.
+func reReviewed(pr *PullRequest, actor string, minutes int) {
+	pr.Labels = append(pr.Labels, "re-review")
+	pr.LabelEvents = append(pr.LabelEvents, LabelEvent{Label: "re-review", Actor: actor, Added: true, At: at(minutes)})
 }
 
 // builderPR is a pull request a build Job opened: one commit by the builder, on a
@@ -193,6 +202,59 @@ func TestDecide(t *testing.T) {
 			pr.Comments = []Comment{reviewComment(head, "", 1)}
 		}), Decision{Work: WorkNone, Reason: "reviewed-no-verdict"}},
 
+		// The maintainer asks for the head again with the re-review label.
+		{"held, then the maintainer labelled re-review", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 1)}
+			reReviewed(pr, owner, 5)
+		}), Decision{Work: WorkReview, Reason: "re-review"}},
+		{"held, then a stranger labelled re-review", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 1)}
+			reReviewed(pr, "someone-else", 5)
+		}), Decision{Work: WorkNone, Reason: "verdict-held", Verdict: VerdictHeld}},
+		{"held, then the builder labelled re-review", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 1)}
+			reReviewed(pr, builder, 5)
+		}), Decision{Work: WorkNone, Reason: "verdict-held", Verdict: VerdictHeld}},
+		{"the maintainer labelled re-review before the hold", builderPR(func(pr *PullRequest) {
+			reReviewed(pr, owner, 1)
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 5)}
+		}), Decision{Work: WorkNone, Reason: "verdict-held", Verdict: VerdictHeld}},
+		{"the maintainer labelled re-review, then someone else re-added it", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 1)}
+			reReviewed(pr, owner, 5)
+			pr.LabelEvents = append(pr.LabelEvents,
+				LabelEvent{Label: "re-review", Actor: owner, Added: false, At: at(6)},
+				LabelEvent{Label: "re-review", Actor: "someone-else", Added: true, At: at(7)})
+		}), Decision{Work: WorkNone, Reason: "verdict-held", Verdict: VerdictHeld}},
+		{"the label event is there but the label has been removed", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 1)}
+			reReviewed(pr, owner, 5)
+			pr.Labels = nil
+		}), Decision{Work: WorkNone, Reason: "verdict-held", Verdict: VerdictHeld}},
+		{"the label is there but no event says who added it", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 1)}
+			pr.Labels = []string{"Re-Review"}
+		}), Decision{Work: WorkNone, Reason: "verdict-held", Verdict: VerdictHeld}},
+		{"nits, then the maintainer wants a second look", builderPR(func(pr *PullRequest) {
+			pr.Comments = []Comment{reviewComment(head, VerdictNits, 1)}
+			reReviewed(pr, owner, 5)
+		}), Decision{Work: WorkReview, Reason: "re-review"}},
+		{"changes after one round, then the maintainer labelled re-review", builderPR(func(pr *PullRequest) {
+			pr.Comments = []Comment{reviewComment(oldHead, VerdictChanges, 1), fixComment(builder, 1, 5), reviewComment(head, VerdictChanges, 9)}
+			reReviewed(pr, owner, 12)
+		}), Decision{Work: WorkReview, Reason: "re-review", Round: 1}},
+		{"no review at the head: the label is beside the point", builderPR(func(pr *PullRequest) {
+			reReviewed(pr, owner, 5)
+		}), Decision{Work: WorkReview, Reason: "no-review-at-head"}},
+		{"reviewed at an older head only, with the label", builderPR(func(pr *PullRequest) {
+			pr.Comments = []Comment{reviewComment(oldHead, VerdictReady, 1)}
+			reReviewed(pr, owner, 5)
+		}), Decision{Work: WorkReview, Reason: "no-review-at-head"}},
+		{"the label stays after the re-review posted", builderPR(func(pr *PullRequest) {
+			pr.Statuses = []Status{verdictStatus(VerdictHeld, 1), verdictStatus(VerdictReady, 9)}
+			reReviewed(pr, owner, 5)
+		}), Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictReady}},
+
 		// Which record wins.
 		{"the status is newer than the comment", builderPR(func(pr *PullRequest) {
 			pr.Comments = []Comment{reviewComment(head, VerdictChanges, 1)}
@@ -225,6 +287,41 @@ func TestDecide(t *testing.T) {
 func TestTheZeroPolicyAllowsNobody(t *testing.T) {
 	if got := (Policy{}).Decide(builderPR(nil)); got.Work != WorkNone {
 		t.Errorf("an unconfigured policy decided %+v", got)
+	}
+}
+
+func TestReReviewNeedsAMaintainer(t *testing.T) {
+	// With no maintainer configured, nobody's label re-opens a review, and the
+	// poller's count of asks is nought.
+	nobody := policy
+	nobody.Maintainer = ""
+	pr := builderPR(func(pr *PullRequest) {
+		pr.Statuses = []Status{verdictStatus(VerdictHeld, 1)}
+		reReviewed(pr, owner, 5)
+	})
+	if got := nobody.Decide(pr); got.Reason != "verdict-held" {
+		t.Errorf("got %+v, want the hold kept", got)
+	}
+	if got := nobody.ReReviews(pr); got != 0 {
+		t.Errorf("%d asks with no maintainer", got)
+	}
+}
+
+func TestReReviewsCountsTheMaintainersAsks(t *testing.T) {
+	pr := builderPR(func(pr *PullRequest) {
+		pr.LabelEvents = []LabelEvent{
+			{Label: "re-review", Actor: owner, Added: true, At: at(1)},
+			{Label: "re-review", Actor: owner, Added: false, At: at(2)},
+			{Label: "re-review", Actor: "someone-else", Added: true, At: at(3)},
+			{Label: "Re-Review", Actor: "OCTO-MAINTAINER", Added: true, At: at(4)},
+			{Label: "hold", Actor: owner, Added: true, At: at(5)},
+		}
+	})
+	if got := policy.ReReviews(pr); got != 2 {
+		t.Errorf("%d asks, want 2: the maintainer's adds alone, whatever the case", got)
+	}
+	if got := policy.ReReviews(builderPR(nil)); got != 0 {
+		t.Errorf("%d asks with no events", got)
 	}
 }
 

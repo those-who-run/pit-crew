@@ -386,6 +386,34 @@ func TestWrites(t *testing.T) {
 	}
 }
 
+func TestRemoveLabel(t *testing.T) {
+	f, c := newFake(t)
+	// GitHub answers the labels left on the pull request.
+	f.json("DELETE", "/repos/those-who-run/ecu/issues/31/labels/re-review", `[{"name": "parity"}]`)
+	if err := c.RemoveLabel(t.Context(), "those-who-run/ecu", 31, "re-review"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(f.requests, []string{"DELETE /repos/those-who-run/ecu/issues/31/labels/re-review"}) {
+		t.Errorf("requests %v", f.requests)
+	}
+	// A label that is not on the pull request answers 404, which is the state
+	// wanted; anything else is an answer to pass on.
+	f.routes["DELETE /repos/those-who-run/ecu/issues/31/labels/needs triage"] = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprint(w, `{"message": "Label does not exist"}`)
+	}
+	if err := c.RemoveLabel(t.Context(), "those-who-run/ecu", 31, "needs triage"); err != nil {
+		t.Errorf("a label already gone: %v", err)
+	}
+	if f.requests[1] != "DELETE /repos/those-who-run/ecu/issues/31/labels/needs%20triage" {
+		t.Errorf("request %q", f.requests[1])
+	}
+	f.failFirst, f.failStatus = 1, http.StatusForbidden
+	if err := c.RemoveLabel(t.Context(), "those-who-run/ecu", 31, "re-review"); !IsStatus(err, http.StatusForbidden) {
+		t.Errorf("error %v, want the 403", err)
+	}
+}
+
 func TestCompare(t *testing.T) {
 	f, c := newFake(t)
 	f.json("GET", "/repos/those-who-run/ecu/compare/main...agent/232-x", `{"status": "ahead", "ahead_by": 2, "behind_by": 0,

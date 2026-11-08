@@ -39,9 +39,12 @@ type Policies struct {
 
 // Candidate is one pull request with its decision.
 type Candidate struct {
-	Pull     github.PullRequest
-	Rounds   int
-	Decision ladder.Decision
+	Pull   github.PullRequest
+	Rounds int
+	// ReReviews is how often the maintainer has asked for a review again; it names
+	// the Job when the decision is one.
+	ReReviews int
+	Decision  ladder.Decision
 }
 
 // BuildCandidate is one issue with its decision.
@@ -94,7 +97,27 @@ func Gather(ctx context.Context, src Source, policy ladder.Policy, pr github.Pul
 			return out, err
 		}
 	}
+	if policy.ReReviewLabel != "" && ladder.HasLabel(pr.Labels, policy.ReReviewLabel) {
+		// Who put the label there, and when, is on the timeline; it is read only
+		// when the label is on, as the issue's is for agent-ready.
+		events, err := src.ListTimeline(ctx, pr.Repo, pr.Number)
+		if err != nil {
+			return out, err
+		}
+		out.LabelEvents = labelEvents(events)
+	}
 	return out, nil
+}
+
+// labelEvents keeps the labeled and unlabeled events of a timeline.
+func labelEvents(events []github.TimelineEvent) []ladder.LabelEvent {
+	var out []ladder.LabelEvent
+	for _, e := range events {
+		if e.Event == "labeled" || e.Event == "unlabeled" {
+			out = append(out, ladder.LabelEvent{Label: e.Label, Actor: e.Actor, Added: e.Event == "labeled", At: e.At})
+		}
+	}
+	return out
 }
 
 // Pulls returns every open pull request in the repositories polled, with its
@@ -125,7 +148,7 @@ func Pulls(ctx context.Context, src Source, policies Policies, logger *slog.Logg
 				continue
 			}
 			rounds, _ := policies.Pull.FixRounds(data)
-			candidates = append(candidates, Candidate{Pull: pr, Rounds: rounds, Decision: policies.Pull.Decide(data)})
+			candidates = append(candidates, Candidate{Pull: pr, Rounds: rounds, ReReviews: policies.Pull.ReReviews(data), Decision: policies.Pull.Decide(data)})
 		}
 	}
 	return candidates, errorCount, nil
@@ -140,15 +163,11 @@ func GatherIssue(ctx context.Context, src Source, policy ladder.BuildPolicy, iss
 	if err != nil {
 		return out, err
 	}
+	out.LabelEvents = labelEvents(events)
 	for _, e := range events {
-		switch e.Event {
-		case "labeled", "unlabeled":
-			out.LabelEvents = append(out.LabelEvents, ladder.LabelEvent{Label: e.Label, Actor: e.Actor, Added: e.Event == "labeled", At: e.At})
-		case "cross-referenced":
-			if e.Source != nil && ladder.RefersTo(e.Source.Body, issue.Repo, issue.Number) {
-				out.LinkedPRs = append(out.LinkedPRs, ladder.LinkedPR{Repo: e.Source.Repo, Number: e.Source.Number, Author: e.Source.Author,
-					Open: e.Source.State == "open", CreatedAt: e.Source.CreatedAt})
-			}
+		if e.Event == "cross-referenced" && e.Source != nil && ladder.RefersTo(e.Source.Body, issue.Repo, issue.Number) {
+			out.LinkedPRs = append(out.LinkedPRs, ladder.LinkedPR{Repo: e.Source.Repo, Number: e.Source.Number, Author: e.Source.Author,
+				Open: e.Source.State == "open", CreatedAt: e.Source.CreatedAt})
 		}
 	}
 	if repo, _ := policy.Target(issue.Labels); repo != "" {

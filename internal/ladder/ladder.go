@@ -176,7 +176,8 @@ func hasLogin(list []string, login string) bool {
 	return false
 }
 
-func hasLabel(labels []string, name string) bool {
+// HasLabel reports whether a label is among labels, whatever its case.
+func HasLabel(labels []string, name string) bool {
 	for _, label := range labels {
 		if strings.EqualFold(label, name) {
 			return true

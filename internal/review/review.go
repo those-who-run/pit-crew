@@ -25,17 +25,20 @@ type Config struct {
 	HeadSHA string
 	// Reviewer is the login the token acts as; an existing comment of its own for
 	// this head is updated rather than repeated.
-	Reviewer     string
-	Dir          string
-	HoldDir      string
-	AllowFile    string
-	PatternsFile string
+	Reviewer string
+	// ReReviewLabel is the label the maintainer asks for another review with; it
+	// comes off once this review has posted or held, so one label is one run.
+	ReReviewLabel string
+	Dir           string
+	HoldDir       string
+	AllowFile     string
+	PatternsFile  string
 }
 
 // ConfigFromEnv reads the configuration.
 func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		Repo: getenv("PUBLISH_REPO"), HeadSHA: getenv("PUBLISH_HEAD_SHA"), Reviewer: getenv("LADDER_REVIEWER"),
+		Repo: getenv("PUBLISH_REPO"), HeadSHA: getenv("PUBLISH_HEAD_SHA"), Reviewer: getenv("LADDER_REVIEWER"), ReReviewLabel: getenv("LADDER_REREVIEW_LABEL"),
 		Dir: getenv("PUBLISH_DIR"), HoldDir: getenv("PUBLISH_HOLD_DIR"), AllowFile: getenv("PUBLISH_ALLOW_FILE"), PatternsFile: getenv("PUBLISH_PATTERNS_FILE"),
 	}
 	if cfg.Dir == "" {
@@ -43,6 +46,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	if cfg.Reviewer == "" {
 		cfg.Reviewer = "twr-reviewer[bot]"
+	}
+	if cfg.ReReviewLabel == "" {
+		cfg.ReReviewLabel = "re-review"
 	}
 	var err error
 	if cfg.Number, err = strconv.Atoi(getenv("PUBLISH_NUMBER")); err != nil || cfg.Number < 1 {
@@ -64,6 +70,7 @@ type GitHub interface {
 	CreateComment(ctx context.Context, repo string, number int, body string) (int64, error)
 	UpdateComment(ctx context.Context, repo string, id int64, body string) error
 	SetStatus(ctx context.Context, repo, sha, context, state, description string) error
+	RemoveLabel(ctx context.Context, repo string, number int, name string) error
 }
 
 // Run does the step and returns its exit code.
@@ -137,6 +144,16 @@ func run(ctx context.Context, cfg Config, gh GitHub, logger *slog.Logger) (int, 
 		return steps.ExitFailed, err
 	}
 	logger.InfoContext(ctx, "published", "repo", cfg.Repo, "number", cfg.Number, "outcome", string(result.Outcome), "verdict", string(result.Verdict), "status", result.StatusDescription)
+	// The review is on GitHub and its record is newer than any ask, so the label
+	// has done its work whether or not it comes off: a removal that fails is a
+	// warning, not a failed step.
+	if ladder.HasLabel(pr.Labels, cfg.ReReviewLabel) {
+		if err := gh.RemoveLabel(ctx, cfg.Repo, cfg.Number, cfg.ReReviewLabel); err != nil {
+			logger.WarnContext(ctx, "remove label", "repo", cfg.Repo, "number", cfg.Number, "label", cfg.ReReviewLabel, "err", err.Error())
+		} else {
+			logger.InfoContext(ctx, "removed label", "repo", cfg.Repo, "number", cfg.Number, "label", cfg.ReReviewLabel)
+		}
+	}
 	if result.Outcome == publish.ReviewHold {
 		return steps.ExitHeld, nil
 	}
