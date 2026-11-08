@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/those-who-run/pit-crew/internal/github"
 	"github.com/those-who-run/pit-crew/internal/lanes"
@@ -423,6 +424,38 @@ func TestIsSteering(t *testing.T) {
 	} {
 		if got := IsSteering(p); got != want {
 			t.Errorf("IsSteering(%q) = %v", p, got)
+		}
+	}
+}
+
+// task.json records when the step read the pull request, from the clock before
+// the read, so publish-review can tell a re-review label applied while the Job
+// ran from one this review saw. A build reads no pull request and records none.
+func TestTaskRecordsWhenThePullRequestWasRead(t *testing.T) {
+	o := newOrigin(t)
+	readAt := time.Date(2026, 11, 8, 9, 30, 15, 0, time.FixedZone("CET", 3600))
+	for _, kind := range []string{KindReview, KindFix, KindBuild} {
+		cfg, dir := config(t, o, kind)
+		cfg.Now = func() time.Time { return readAt }
+		if code := Run(t.Context(), cfg, source{pull: pull(o)}, logger()); code != ExitOK {
+			t.Fatalf("%s: exit %d", kind, code)
+		}
+		raw := read(t, filepath.Join(dir, DataDir, "task.json"))
+		var task Task
+		if err := json.Unmarshal([]byte(raw), &task); err != nil {
+			t.Fatal(err)
+		}
+		if kind == KindBuild {
+			if strings.Contains(raw, "fetched_at") {
+				t.Errorf("build: task.json has fetched_at: %s", raw)
+			}
+			continue
+		}
+		if !task.FetchedAt.Equal(readAt) || task.FetchedAt.Location() != time.UTC {
+			t.Errorf("%s: fetched_at %v, want %v in UTC", kind, task.FetchedAt, readAt)
+		}
+		if !strings.Contains(raw, `"fetched_at": "2026-11-08T08:30:15Z"`) {
+			t.Errorf("%s: task.json %s", kind, raw)
 		}
 	}
 }

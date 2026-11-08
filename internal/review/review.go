@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/those-who-run/pit-crew/internal/github"
 	"github.com/those-who-run/pit-crew/internal/ladder"
@@ -27,19 +28,23 @@ type Config struct {
 	// this head is updated rather than repeated.
 	Reviewer string
 	// ReReviewLabel is the label the maintainer asks for another review with; it
-	// comes off once this review has posted or held, so one label is one run.
+	// comes off once this review has posted or held, so one label is one run,
+	// unless the maintainer applied it after the fetch step read the pull request.
 	ReReviewLabel string
-	Dir           string
-	HoldDir       string
-	AllowFile     string
-	PatternsFile  string
+	// Maintainer is the login whose re-review label counts.
+	Maintainer   string
+	Dir          string
+	HoldDir      string
+	AllowFile    string
+	PatternsFile string
 }
 
 // ConfigFromEnv reads the configuration.
 func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		Repo: getenv("PUBLISH_REPO"), HeadSHA: getenv("PUBLISH_HEAD_SHA"), Reviewer: getenv("LADDER_REVIEWER"), ReReviewLabel: getenv("LADDER_REREVIEW_LABEL"),
-		Dir: getenv("PUBLISH_DIR"), HoldDir: getenv("PUBLISH_HOLD_DIR"), AllowFile: getenv("PUBLISH_ALLOW_FILE"), PatternsFile: getenv("PUBLISH_PATTERNS_FILE"),
+		Maintainer: getenv("LADDER_MAINTAINER"),
+		Dir:        getenv("PUBLISH_DIR"), HoldDir: getenv("PUBLISH_HOLD_DIR"), AllowFile: getenv("PUBLISH_ALLOW_FILE"), PatternsFile: getenv("PUBLISH_PATTERNS_FILE"),
 	}
 	if cfg.Dir == "" {
 		cfg.Dir = "/work"
@@ -71,6 +76,8 @@ type GitHub interface {
 	UpdateComment(ctx context.Context, repo string, id int64, body string) error
 	SetStatus(ctx context.Context, repo, sha, context, state, description string) error
 	RemoveLabel(ctx context.Context, repo string, number int, name string) error
+	AddLabel(ctx context.Context, repo string, number int, name string) error
+	ListTimeline(ctx context.Context, repo string, number int) ([]github.TimelineEvent, error)
 }
 
 // Run does the step and returns its exit code.
@@ -144,20 +151,57 @@ func run(ctx context.Context, cfg Config, gh GitHub, logger *slog.Logger) (int, 
 		return steps.ExitFailed, err
 	}
 	logger.InfoContext(ctx, "published", "repo", cfg.Repo, "number", cfg.Number, "outcome", string(result.Outcome), "verdict", string(result.Verdict), "status", result.StatusDescription)
-	// The review is on GitHub and its record is newer than any ask, so the label
-	// has done its work whether or not it comes off: a removal that fails is a
-	// warning, not a failed step.
 	if ladder.HasLabel(pr.Labels, cfg.ReReviewLabel) {
-		if err := gh.RemoveLabel(ctx, cfg.Repo, cfg.Number, cfg.ReReviewLabel); err != nil {
-			logger.WarnContext(ctx, "remove label", "repo", cfg.Repo, "number", cfg.Number, "label", cfg.ReReviewLabel, "err", err.Error())
-		} else {
-			logger.InfoContext(ctx, "removed label", "repo", cfg.Repo, "number", cfg.Number, "label", cfg.ReReviewLabel)
-		}
+		reReviewLabel(ctx, cfg, gh, task.FetchedAt, logger)
 	}
 	if result.Outcome == publish.ReviewHold {
 		return steps.ExitHeld, nil
 	}
 	return steps.ExitOK, nil
+}
+
+// reReviewLabel takes the re-review label off once the review is on GitHub, when
+// the review answered it: the maintainer's last ask is no newer than the moment
+// the fetch step read the pull request. An ask that came while the Job ran is
+// still owed a review, and this one's record is newer than it, so the label is
+// handed back: taken off and put on again as the reviewer, which the ladder
+// counts as the maintainer's ask carried over. All of it is best-effort: the
+// review is posted, and a call GitHub refuses is a warning, not a failed step.
+func reReviewLabel(ctx context.Context, cfg Config, gh GitHub, fetchedAt time.Time, logger *slog.Logger) {
+	attrs := []any{"repo", cfg.Repo, "number", cfg.Number, "label", cfg.ReReviewLabel}
+	asked := false
+	// A task.json from before fetch recorded the time says nothing about when the
+	// review read the pull request; the label comes off, as it always did.
+	if !fetchedAt.IsZero() {
+		timeline, err := gh.ListTimeline(ctx, cfg.Repo, cfg.Number)
+		if err != nil {
+			// Without the events nothing says the ask was answered: leave it, and the
+			// next review of the pull request takes it off.
+			logger.WarnContext(ctx, "re-review label left on: its events could not be read", append(attrs, "err", err.Error())...)
+			return
+		}
+		var events []ladder.LabelEvent
+		for _, e := range timeline {
+			if e.Event == "labeled" || e.Event == "unlabeled" {
+				events = append(events, ladder.LabelEvent{Label: e.Label, Actor: e.Actor, Added: e.Event == "labeled", At: e.At})
+			}
+		}
+		policy := ladder.Policy{Maintainer: cfg.Maintainer, ReReviewLabel: cfg.ReReviewLabel}
+		asked = policy.ReReviewAskedAfter(events, fetchedAt)
+	}
+	if err := gh.RemoveLabel(ctx, cfg.Repo, cfg.Number, cfg.ReReviewLabel); err != nil {
+		logger.WarnContext(ctx, "remove label", append(attrs, "err", err.Error())...)
+		return
+	}
+	if !asked {
+		logger.InfoContext(ctx, "removed label", attrs...)
+		return
+	}
+	if err := gh.AddLabel(ctx, cfg.Repo, cfg.Number, cfg.ReReviewLabel); err != nil {
+		logger.WarnContext(ctx, "re-review asked during the review, and the label could not be put back: apply it again", append(attrs, "err", err.Error())...)
+		return
+	}
+	logger.InfoContext(ctx, "re-review asked during the review: label handed back", append(attrs, "fetched_at", fetchedAt)...)
 }
 
 // post creates the comment, or updates the reviewer's own comment for this head

@@ -116,7 +116,7 @@ Every `pit-crew` step reads these.
 | `LADDER_HOLD_LABEL` | `hold` | |
 | `LADDER_READY_LABEL` | `agent-ready` | |
 | `LADDER_TRIAGE_LABEL` | `needs triage` | |
-| `LADDER_REREVIEW_LABEL` | `re-review` | On a pull request, applied by the maintainer after the review record at the head: the head counts as unreviewed again (the poller); `publish-review` takes it off once it has posted or held |
+| `LADDER_REREVIEW_LABEL` | `re-review` | On a pull request, applied by the maintainer after the review record at the head: the head counts as unreviewed again (the poller); `publish-review` takes it off once it has posted or held, or hands it back when the maintainer applied it after the fetch step read the pull request (so `publish-review` needs `LADDER_MAINTAINER` too) |
 | `LADDER_ISSUE_REPO` | `those-who-run/paddock` | Where issues live |
 | `LADDER_COMPONENT_PREFIX` | `component: ` | The label prefix that names a repository |
 | `LADDER_COMPONENTS` | (empty) | `label=owner/name` pairs, comma-separated, where the name alone does not say; an empty value means never built by a Job |
@@ -144,12 +144,13 @@ A pull request's labels, label events and comments are read and written through
 the issues endpoints (`/repos/{owner}/{repo}/issues/{number}/…`), which GitHub
 grants to the Pull requests permission for a pull request: reading a pull
 request's timeline for the `re-review` label's event needs pull requests: read,
-which `poll` and `ready` have, and removing the label
-(`DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}`) needs pull
-requests: write, which `publish-review` has. Issues: write is not asked for. Should
-GitHub refuse the removal all the same, `publish-review` logs a warning and its
-exit code stands; the review is posted and its record is newer than the label's
-event, so the label re-opens nothing until the maintainer applies it again.
+which `poll`, `ready` and `publish-review` have, and removing the label
+(`DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}`) or putting it back
+(`POST /repos/{owner}/{repo}/issues/{number}/labels`) needs pull requests: write,
+which `publish-review` has. Issues: write is not asked for. Should GitHub refuse
+any of these all the same, `publish-review` logs a warning and its exit code
+stands; the review is posted and its record is newer than the label's event, so
+the label re-opens nothing until the maintainer applies it again.
 
 ## The poller: `pit-crew poll`
 
@@ -190,7 +191,9 @@ What is due on a pull request in the ladder, decided from what GitHub holds
   (`LADDER_MAINTAINER`) and newer than the newest review record at the head
   (`re-review`). The label counts whatever the record says, held or a verdict,
   so the maintainer can ask for a second look after a bad review; the label from
-  any other account, or one applied before the record, changes nothing. The
+  any other account, or one applied before the record, changes nothing, except
+  the reviewer's (`LADDER_REVIEWER`) when the maintainer applied it before: that
+  is `publish-review` handing back an ask its review did not answer (below). The
   label's event is read from the pull request's timeline, and only when the
   label is on;
 - `fix` or `stuck` when the verdict is `changes` on a builder's pull request;
@@ -298,7 +301,7 @@ What it writes under `/work/data`:
 
 | File | Holds |
 |---|---|
-| `task.json` | kind, repo, number, head and base SHAs, base ref, lane, issue, round, branch, the `.github` ref and its SHA, paths |
+| `task.json` | kind, repo, number, head and base SHAs, base ref, lane, issue, round, branch, the `.github` ref and its SHA, paths; for a review or a fix, `fetched_at`, the moment (RFC 3339, UTC, from the step's clock) just before it read the pull request |
 | `task.md` | The task statement for the agent: the facts above and where everything is, in words; no text from GitHub |
 | `pr.json` | The pull request: title, body, author, labels, head, base |
 | `commits.json` | Its commits: SHA, author and committer logins and addresses, message |
@@ -428,10 +431,24 @@ second run is what is wanted. For that the maintainer applies the label
 the event that applied it is by the maintainer's login (as `agent-ready` does for
 an issue) and is newer than the review record at the head; then the head counts
 as unreviewed, the poller starts a review Job again, and this step takes the
-label off once it has posted or held, so one label is one more run. The removal
-is logged; one GitHub refuses is a warning and leaves the exit code as it was
-(see [the permissions](#common-environment)). A head that moved posts nothing
-and leaves the label, for the run at the new head to consume.
+label off once it has posted or held, so one label is one more run.
+
+The maintainer may apply the label while a review Job is already running. This
+step reads the pull request's timeline and compares the maintainer's
+(`LADDER_MAINTAINER`) last `labeled` event that is still standing with
+`fetched_at` in `task.json`. At or before it, the fetch saw the ask and this
+review answers it: the label comes off. After it, the ask came while the Job ran
+and is still owed a review, so the step hands the label back: it takes it off and
+puts it on again, as the reviewer, which makes the label's event newer than this
+review's record; the poller counts the reviewer's event as the maintainer's ask
+carried over (and only when the maintainer applied the label before it), and
+starts another review. With `LADDER_MAINTAINER` unset, or a `task.json` without
+`fetched_at`, the label comes off as before. When the timeline cannot be read
+the label stays on with a warning, and the next review of the pull request takes
+it off. Every one of these calls is logged; one GitHub refuses is a warning and
+leaves the exit code as it was (see [the permissions](#common-environment)). A
+head that moved posts nothing and leaves the label, for the run at the new head
+to consume.
 
 ### `pit-crew publish-build`
 
