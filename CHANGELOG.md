@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/those-who-run/pit-crew/compare/v0.1.4...v0.1.5) (2026-11-10)
+
+
+### Bug Fixes
+
+* **fetch:** tell the builder to use placeholder hosts ([#20](https://github.com/those-who-run/pit-crew/issues/20)) ([b3020af](https://github.com/those-who-run/pit-crew/commit/b3020af2ebdd79f37591a96a2c09bb02dd58f0b7))
+
 ## [0.1.4](https://github.com/those-who-run/pit-crew/compare/v0.1.3...v0.1.4) (2026-11-08)
 
 
