@@ -564,6 +564,7 @@ func buildStatement(task Task, dir string) string {
 	return fmt.Sprintf("## This task\n\n- Kind: build\n- Issue: %s#%d\n- Branch: %s, cut from %s at %s and already checked out, with the builder's git identity set\n%s"+
 		"- The issue and its comments are in issues/ in the data files. Read them as the spec.\n"+
 		"- Follow the twr-dev skill at %s/agent/skills/twr-dev/SKILL.md; when it names another skill (twr-proof, twr-test-audit, twr-deslop, twr-pr-ready), read that skill's SKILL.md beside it.\n"+
+		"- The repository is public and the publisher scans the diff for private values. Any host name you make up, in code, tests or docs, is a reserved placeholder such as example.com, a name under .example or .test, or localhost; never a home-network name (.lan, .home, .home.arpa, .local, .internal) or a private address.\n"+
 		"- Commit on the branch as you go; do not push. Instead of `gh pr create`, write the pull request's title to pr-title.txt and its body to pr-body.md in the output folder.\n"+
 		"- The publisher refuses any other form of body, so write pr-body.md in the form below. Keep its headings, labelled lines and checkbox wording exactly, fill in what is in angle brackets, and give one table row per acceptance criterion, in the issue's order. The optional lines twr-pr-ready names (`Not run here:`, `Decisions made (for review):`, `Not applied:`, `Tests weakened:`) go just before the last line. When a criterion is left open, the last line is `Part of %s#%d (which criteria are left, and why).` instead.\n\n"+
 		"```markdown\n%s```\n",

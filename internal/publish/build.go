@@ -115,7 +115,7 @@ New direct dependencies: none <or each one, with the reason for it>
 
 | Criterion | Proof | Where |
 |---|---|---|
-| AC1 <short name> | <unit, recording, parity, e2e, live or car> | <the test or the command> |
+| AC1 <short name> | <unit, recording, parity or e2e> | <the test or the command> |
 
 - [x] The command that matches CI (`+"`make check`"+`) is green
 - [x] Docs updated, or none needed because: <reason>
