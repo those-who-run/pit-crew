@@ -9,7 +9,7 @@
 # image's digest. Renovate bumps the base; the tool versions are bumped by hand,
 # in the ARG lines below, with their checksums.
 
-FROM docker.io/library/golang:1.27.3-trixie@sha256:fbb7ae40b62ff8afe31662df570d39b4f5052ac32b90dae8e60d7657a20a74f4 AS build
+FROM docker.io/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9 AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
@@ -22,8 +22,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}"
 FROM docker.io/library/node:22-trixie-slim@sha256:be1e2a3dc2c4fd68cdfadad2a696a280e0d2749098bee509230174d72fb768c6
 
 ARG CLAUDE_CODE_VERSION=2.1.319
-ARG GO_VERSION=1.27.3
-ARG GO_SHA256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+ARG GO_VERSION=1.27.4
+ARG GO_SHA256=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
 ARG UV_VERSION=0.13.7
 ARG UV_SHA256=c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83
 ARG BUF_VERSION=1.75.0

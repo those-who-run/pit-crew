@@ -8,7 +8,7 @@
 # Not distroless, which the template starts from: the fetch and publish steps run
 # git, which distroless's static image does not have. Nothing else is installed.
 
-FROM docker.io/library/golang:1.27.3-trixie@sha256:fbb7ae40b62ff8afe31662df570d39b4f5052ac32b90dae8e60d7657a20a74f4 AS build
+FROM docker.io/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9 AS build
 WORKDIR /src
 # The modules first, so a change to the code alone reuses this layer.
 COPY go.mod go.sum* ./
