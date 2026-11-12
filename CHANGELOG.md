@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/those-who-run/pit-crew/compare/v0.1.5...v0.1.6) (2026-11-12)
+
+
+### Dependencies
+
+* Go 1.27.4 ([#22](https://github.com/those-who-run/pit-crew/issues/22)) ([ed8e0ef](https://github.com/those-who-run/pit-crew/commit/ed8e0ef576e4376b72a6e8145b9764c8e325cb4f))
+
 ## [0.1.5](https://github.com/those-who-run/pit-crew/compare/v0.1.4...v0.1.5) (2026-11-10)
 
 
