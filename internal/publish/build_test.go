@@ -11,6 +11,8 @@ import (
 
 var builder = Identity{Name: "twr-builder[bot]", Email: "123456+twr-builder[bot]@users.noreply.github.com"}
 
+var maintainer = Identity{Name: "Octo Maintainer", Email: "1+octo-maintainer@users.noreply.github.com"}
+
 func rules(t *testing.T) BuildRules {
 	t.Helper()
 	cfg, err := lanes.Load(filepath.Join("..", "lanes", "testdata", "lanes.json"))
@@ -99,6 +101,7 @@ const answer = "Answer to the review at `aaaaaaaa`:\n\n1. Fixed in `bbbbbbbb`: t
 func fixFacts(change func(*BuildFacts)) BuildFacts {
 	return buildFacts(func(f *BuildFacts) {
 		f.PrevIsAncestor = true
+		f.NewCommits = f.Commits
 		f.Answer = answer
 		if change != nil {
 			change(f)
@@ -135,13 +138,17 @@ func TestCheckBuildPasses(t *testing.T) {
 		})},
 		{"a fix with new commits", fixTask(), fixFacts(nil)},
 		{"a fix that contests everything adds no commit", fixTask(), fixFacts(func(f *BuildFacts) {
-			f.Commits = nil
+			f.Commits, f.NewCommits = nil, nil
 			f.Changes = nil
 			f.Patch = ""
 		})},
 		{"a fix's second round", func() BuildTask { t := fixTask(); t.Round, t.RoundsUsed = 2, 1; return t }(), fixFacts(nil)},
 		{"a fix whose branch merged main in", fixTask(), fixFacts(func(f *BuildFacts) {
-			f.Commits = append(f.Commits, GitCommit{SHA: "c", Author: builder, Committer: builder, Message: "Merge branch 'main' into agent/232-fuel-callouts"})
+			f.NewCommits = append(f.NewCommits, GitCommit{SHA: "c", Author: builder, Committer: builder, Message: "Merge branch 'main' into agent/232-fuel-callouts"})
+		})},
+		{"a fix after someone else's earlier commit", fixTask(), fixFacts(func(f *BuildFacts) {
+			earlier := GitCommit{SHA: "dddddddddddddddddddddddddddddddddddddddd", Author: maintainer, Committer: maintainer, Message: "Rebase onto main"}
+			f.Commits = append([]GitCommit{earlier}, f.Commits...)
 		})},
 	}
 	for _, c := range cases {
@@ -154,7 +161,6 @@ func TestCheckBuildPasses(t *testing.T) {
 }
 
 func TestCheckBuildRefuses(t *testing.T) {
-	other := Identity{Name: "Octo Maintainer", Email: "1+octo-maintainer@users.noreply.github.com"}
 	cases := []struct {
 		name   string
 		task   BuildTask
@@ -174,9 +180,15 @@ func TestCheckBuildRefuses(t *testing.T) {
 		{"a build with nothing on the branch", buildTask(), buildFacts(func(f *BuildFacts) { f.Commits = nil }), []string{"no-commits"}, ""},
 		{"a fix that rewrote the head", fixTask(), fixFacts(func(f *BuildFacts) { f.PrevIsAncestor = false }), []string{"history-rewritten"}, baseSHA},
 		{"an unknown mode", func() BuildTask { t := buildTask(); t.Mode = "review"; return t }(), buildFacts(nil), []string{"mode"}, ""},
-		{"a commit authored as the maintainer", buildTask(), buildFacts(func(f *BuildFacts) { f.Commits[0].Author = other }),
+		{"a commit authored as the maintainer", buildTask(), buildFacts(func(f *BuildFacts) { f.Commits[0].Author = maintainer }),
 			[]string{"commit-author"}, "Octo Maintainer"},
-		{"a commit committed as someone else", buildTask(), buildFacts(func(f *BuildFacts) { f.Commits[0].Committer = other }),
+		{"a fix commit after the reviewed head that is not the builder's", fixTask(), fixFacts(func(f *BuildFacts) {
+			f.NewCommits = append(f.NewCommits, GitCommit{SHA: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", Author: maintainer, Committer: builder, Message: "tweak"})
+		}), []string{"commit-author"}, "eeeeeeee"},
+		{"a build refuses a commit that is not the builder's, even one a fix would skip", buildTask(), buildFacts(func(f *BuildFacts) {
+			f.Commits = append(f.Commits, GitCommit{SHA: "dddddddddddddddddddddddddddddddddddddddd", Author: maintainer, Committer: maintainer, Message: "Rebase"})
+		}), []string{"commit-author"}, "dddddddd"},
+		{"a commit committed as someone else", buildTask(), buildFacts(func(f *BuildFacts) { f.Commits[0].Committer = maintainer }),
 			[]string{"commit-author"}, ""},
 		{"a commit with the builder's name and another address", buildTask(), buildFacts(func(f *BuildFacts) {
 			f.Commits[0].Author.Email = "builder@" + "example.net"
