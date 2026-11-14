@@ -533,7 +533,13 @@ func fixUnit(c Candidate) unit {
 
 func buildUnit(c BuildCandidate) unit {
 	owner, name, _ := strings.Cut(c.Decision.Repo, "/")
-	return unit{kind: "build", name: fmt.Sprintf("build-%s-%d", repoSlug(c.Decision.Repo), c.Issue.Number), values: map[string]string{
+	jobName := fmt.Sprintf("build-%s-%d", repoSlug(c.Decision.Repo), c.Issue.Number)
+	if c.Decision.Retries > 0 {
+		// The earlier build's Job is still there for its TTL, so each retry gets a
+		// name of its own.
+		jobName += fmt.Sprintf("-t%d", c.Decision.Retries)
+	}
+	return unit{kind: "build", name: jobName, values: map[string]string{
 		"repo": c.Decision.Repo, "owner": owner, "name": name, "number": "", "head_sha": "", "base_ref": "main",
 		"issue_repo": c.Issue.Repo, "issue": strconv.Itoa(c.Issue.Number), "round": "",
 	}}

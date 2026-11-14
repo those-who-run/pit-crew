@@ -33,6 +33,7 @@ func PoliciesFromEnv(getenv func(string) string) (Policies, error) {
 		Builder:         p.Pull.Builder,
 		Authors:         p.Pull.Authors,
 		ReadyLabel:      or(getenv("LADDER_READY_LABEL"), "agent-ready"),
+		RetryLabel:      or(getenv("LADDER_RETRY_LABEL"), "retry"),
 		TriageLabel:     or(getenv("LADDER_TRIAGE_LABEL"), "needs triage"),
 		HoldLabel:       p.Pull.HoldLabel,
 		ComponentPrefix: or(getenv("LADDER_COMPONENT_PREFIX"), "component: "),
