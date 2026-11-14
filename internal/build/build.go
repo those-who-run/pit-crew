@@ -390,17 +390,15 @@ func (w *workspace) facts(ctx context.Context, facts *publish.BuildFacts, task p
 	if task.PrevHead != "" {
 		facts.PrevIsAncestor = w.isAncestor(ctx, task.PrevHead, sha)
 	}
-	log, err := w.git(ctx, "log", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x1e", "base.."+sha)
-	if err != nil {
+	if facts.Commits, err = w.commits(ctx, "base.."+sha); err != nil {
 		return err
 	}
-	for _, record := range strings.Split(string(log), "\x1e") {
-		fields := strings.SplitN(strings.TrimLeft(record, "\n"), "\x00", 6)
-		if len(fields) < 6 {
-			continue
+	// A fix is judged on the commits it added after the reviewed head. When that head
+	// is not an ancestor the fix is refused as rewritten, so there is nothing to read.
+	if task.Mode == publish.ModeFix && facts.PrevIsAncestor {
+		if facts.NewCommits, err = w.commits(ctx, task.PrevHead+".."+sha); err != nil {
+			return err
 		}
-		facts.Commits = append(facts.Commits, publish.GitCommit{SHA: fields[0], Author: publish.Identity{Name: fields[1], Email: fields[2]},
-			Committer: publish.Identity{Name: fields[3], Email: fields[4]}, Message: fields[5]})
 	}
 	status, err := w.git(ctx, "diff", "--name-status", "-M", "base..."+sha)
 	if err != nil {
@@ -415,6 +413,24 @@ func (w *workspace) facts(ctx context.Context, facts *publish.BuildFacts, task p
 	}
 	facts.Patch = string(patch)
 	return nil
+}
+
+// commits lists the commits in a revision range, newest first.
+func (w *workspace) commits(ctx context.Context, rng string) ([]publish.GitCommit, error) {
+	log, err := w.git(ctx, "log", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x1e", rng)
+	if err != nil {
+		return nil, err
+	}
+	var commits []publish.GitCommit
+	for _, record := range strings.Split(string(log), "\x1e") {
+		fields := strings.SplitN(strings.TrimLeft(record, "\n"), "\x00", 6)
+		if len(fields) < 6 {
+			continue
+		}
+		commits = append(commits, publish.GitCommit{SHA: fields[0], Author: publish.Identity{Name: fields[1], Email: fields[2]},
+			Committer: publish.Identity{Name: fields[3], Email: fields[4]}, Message: fields[5]})
+	}
+	return commits, nil
 }
 
 func (w *workspace) isAncestor(ctx context.Context, ancestor, sha string) bool {

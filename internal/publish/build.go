@@ -70,6 +70,9 @@ type BuildFacts struct {
 	PrevIsAncestor bool
 	// Commits are the commits on the branch that the base branch does not have.
 	Commits []GitCommit
+	// NewCommits are the commits after PrevHead, the ones a fix made; empty for a
+	// build. A fix is judged on these, not on commits others put on the branch.
+	NewCommits []GitCommit
 	// Changes is `git diff --name-status` from the merge base with the base branch.
 	Changes []lanes.Change
 	// Patch is that diff with no context lines (`--unified=0`).
@@ -143,7 +146,7 @@ const minWeakenedReason = 10
 //
 // It refuses when the work is not on the branch the fetch step made, when the
 // branch is not cut from the base branch (or, for a fix, does not continue the pull
-// request's head), when a commit is not authored and committed as the builder, when
+// request's head), when a commit is not authored and committed as the builder (for a fix, only the commits after the reviewed head), when
 // the diff touches a protected path, when a test is deleted or skipped and the body
 // has no `Tests weakened:` line, when the title is not a Conventional Commit, when
 // the body lacks the template's sections or does not end with this issue's `Closes`
@@ -152,7 +155,11 @@ const minWeakenedReason = 10
 func CheckBuild(task BuildTask, facts BuildFacts, rules BuildRules) []Refusal {
 	var refusals []Refusal
 	refusals = append(refusals, checkBranch(task, facts)...)
-	refusals = append(refusals, checkCommits(facts.Commits, rules)...)
+	commits := facts.Commits
+	if task.Mode == ModeFix {
+		commits = facts.NewCommits
+	}
+	refusals = append(refusals, checkCommits(commits, rules)...)
 	added, removed := ParsePatch(facts.Patch)
 	refusals = append(refusals, checkPaths(facts.Changes, rules.Protected)...)
 	refusals = append(refusals, checkTests(facts, added, removed, rules.Lanes)...)

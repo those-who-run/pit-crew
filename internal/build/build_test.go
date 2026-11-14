@@ -273,6 +273,53 @@ func TestFixPushesAndAnswers(t *testing.T) {
 	}
 }
 
+// moveHead makes the pull request's head, as the fix started from it, newHead.
+func (f *fixture) moveHead(t *testing.T, newHead string) {
+	t.Helper()
+	git(t, f.repo, builder, "push", "-q", "--force", "origin", "agent/232-fuel")
+	f.cfg.HeadSHA = newHead
+	f.gh.pull.HeadSHA = newHead
+	var task fetch.Task
+	path := filepath.Join(f.work, "data", "task.json")
+	if err := json.Unmarshal([]byte(read(t, path)), &task); err != nil {
+		t.Fatal(err)
+	}
+	task.HeadSHA = newHead
+	data, _ := json.Marshal(task)
+	write(t, f.work, "data/task.json", string(data))
+}
+
+func TestFixIgnoresCommitsBeforeTheReviewedHead(t *testing.T) {
+	other := publish.Identity{Name: "Octo Maintainer", Email: "1+octo-maintainer@users.noreply.github.com"}
+	f := newFixture(t, publish.ModeFix)
+	// The maintainer rebased: an earlier commit is theirs, and the review is of the head after it.
+	git(t, f.repo, builder, "reset", "-q", "--hard", f.mainSHA)
+	f.commit(t, other, "chore: rebase", map[string]string{"race/other.go": "package race\n"})
+	reviewed := f.commit(t, builder, "feat(race): fuel", map[string]string{"race/fuel.go": "package race\n\nfunc Fuel() {}\n"})
+	f.moveHead(t, reviewed)
+	head := f.commit(t, builder, "fix(race): compare in laps", map[string]string{"race/fuel.go": "package race\n\nfunc Fuel() bool { return true }\n"})
+	write(t, f.work, "out/answer.md", "Answer to the review at `"+reviewed[:8]+"`:\n\n1. Fixed in `"+head[:8]+"`: laps.\n")
+	if code := Run(t.Context(), f.cfg, f.gh, logger()); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if got := f.originRef(t, "refs/heads/agent/232-fuel"); got != head {
+		t.Errorf("origin's branch is at %q, want %s", got, head)
+	}
+}
+
+func TestFixHeldForANewCommitThatIsNotTheBuilders(t *testing.T) {
+	other := publish.Identity{Name: "Octo Maintainer", Email: "1+octo-maintainer@users.noreply.github.com"}
+	f := newFixture(t, publish.ModeFix)
+	head := f.commit(t, other, "fix(race): laps", map[string]string{"race/fuel.go": "package race\n\nfunc Fuel() bool { return true }\n"})
+	write(t, f.work, "out/answer.md", "Answer to the review at `"+f.cfg.HeadSHA[:8]+"`:\n\n1. Fixed in `"+head[:8]+"`.\n")
+	if code := Run(t.Context(), f.cfg, f.gh, logger()); code != 10 {
+		t.Fatalf("exit %d", code)
+	}
+	if got := f.originRef(t, "refs/heads/agent/232-fuel"); got != f.cfg.HeadSHA {
+		t.Errorf("origin's branch moved to %q", got)
+	}
+}
+
 func TestFixWithARewrittenBody(t *testing.T) {
 	f := newFixture(t, publish.ModeFix)
 	head := f.commit(t, builder, "fix(race): laps", map[string]string{"race/fuel.go": "package race\n\nfunc Fuel() bool { return true }\n"})

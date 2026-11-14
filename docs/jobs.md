@@ -479,7 +479,7 @@ to consume.
 | `PUBLISH_MODE` | (required) | `build` or `fix` |
 | `PUBLISH_REPO`, `PUBLISH_ISSUE_REPO`, `PUBLISH_ISSUE` | (required) | |
 | `PUBLISH_NUMBER`, `PUBLISH_HEAD_SHA`, `PUBLISH_ROUND` | (fix) | The pull request, the head the review was of, the round |
-| `PUBLISH_BUILDER_NAME`, `PUBLISH_BUILDER_EMAIL` | (required) | The identity every commit must carry |
+| `PUBLISH_BUILDER_NAME`, `PUBLISH_BUILDER_EMAIL` | (required) | The identity every commit must carry (for a fix, every commit after the reviewed head) |
 | `PUBLISH_PROTECTED` | `.claude/**,**/CODEOWNERS` | Paths a build may not touch |
 | `PUBLISH_BASE_REF` | `main` | The base branch the pull request targets and the push is checked against |
 | `PUBLISH_GIT_BASE` | `https://github.com/` | What the push URL starts with |
