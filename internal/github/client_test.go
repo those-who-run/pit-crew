@@ -604,3 +604,74 @@ func TestDefaults(t *testing.T) {
 		t.Errorf("escaped %q", got)
 	}
 }
+
+// twoPages serves page 1 and page 2 of a list endpoint, linked as GitHub links them.
+func twoPages(f *fake, path, first, second string) {
+	f.routes["GET "+path] = func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			_, _ = fmt.Fprint(w, second)
+			return
+		}
+		w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?per_page=100&page=2>; rel="next", <x>; rel="last"`, r.Host, path))
+		_, _ = fmt.Fprint(w, first)
+	}
+}
+
+func TestListReviews(t *testing.T) {
+	f, c := newFake(t)
+	twoPages(f, "/repos/those-who-run/ecu/pulls/31/reviews",
+		`[
+{"id": 1, "user": {"login": "maintainer"}, "state": "APPROVED", "body": "Looks good.", "commit_id": "aaa1", "submitted_at": "2026-11-06T08:00:00Z"},
+{"id": 2, "user": {"login": "maintainer"}, "state": "CHANGES_REQUESTED", "body": "Fix the lap count.", "commit_id": "aaa2", "submitted_at": "2026-11-06T09:00:00Z"},
+{"id": 3, "user": {"login": "twr-reviewer[bot]"}, "state": "COMMENTED", "body": "", "commit_id": "aaa2", "submitted_at": "2026-11-06T09:30:00Z"}
+]`,
+		`[
+{"id": 4, "user": null, "state": "DISMISSED", "body": null, "commit_id": "aaa3", "submitted_at": "2026-11-07T08:00:00Z"},
+{"id": 5, "user": {"login": "maintainer"}, "state": "PENDING", "body": "draft", "commit_id": "aaa3"}
+]`)
+	reviews, err := c.ListReviews(t.Context(), "those-who-run/ecu", 31)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(d, h, m int) time.Time { return time.Date(2026, 11, d, h, m, 0, 0, time.UTC) }
+	want := []Review{
+		{ID: 1, Author: "maintainer", State: "APPROVED", Body: "Looks good.", CommitSHA: "aaa1", SubmittedAt: at(6, 8, 0)},
+		{ID: 2, Author: "maintainer", State: "CHANGES_REQUESTED", Body: "Fix the lap count.", CommitSHA: "aaa2", SubmittedAt: at(6, 9, 0)},
+		{ID: 3, Author: "twr-reviewer[bot]", State: "COMMENTED", CommitSHA: "aaa2", SubmittedAt: at(6, 9, 30)},
+		{ID: 4, State: "DISMISSED", CommitSHA: "aaa3", SubmittedAt: at(7, 8, 0)},
+		{ID: 5, Author: "maintainer", State: "PENDING", Body: "draft", CommitSHA: "aaa3"},
+	}
+	if !reflect.DeepEqual(reviews, want) {
+		t.Errorf("got %+v\nwant %+v", reviews, want)
+	}
+	if len(f.requests) != 2 {
+		t.Errorf("requests %v", f.requests)
+	}
+}
+
+func TestListReviewComments(t *testing.T) {
+	f, c := newFake(t)
+	twoPages(f, "/repos/those-who-run/ecu/pulls/31/comments",
+		`[
+{"id": 10, "pull_request_review_id": 2, "user": {"login": "maintainer"}, "body": "Off by one.", "path": "race/lap.go", "line": 42, "commit_id": "aaa2", "created_at": "2026-11-06T09:00:00Z", "updated_at": "2026-11-06T09:05:00Z"}
+]`,
+		`[
+{"id": 11, "pull_request_review_id": 2, "user": null, "body": "Gone line.", "path": "race/fuel.go", "line": null, "commit_id": "aaa1", "created_at": "2026-11-06T09:01:00Z", "updated_at": "2026-11-06T09:01:00Z"}
+]`)
+	comments, err := c.ListReviewComments(t.Context(), "those-who-run/ecu", 31)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ReviewComment{
+		{ID: 10, ReviewID: 2, Author: "maintainer", Body: "Off by one.", Path: "race/lap.go", Line: 42, CommitSHA: "aaa2",
+			CreatedAt: time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 11, 6, 9, 5, 0, 0, time.UTC)},
+		{ID: 11, ReviewID: 2, Body: "Gone line.", Path: "race/fuel.go", CommitSHA: "aaa1",
+			CreatedAt: time.Date(2026, 11, 6, 9, 1, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 11, 6, 9, 1, 0, 0, time.UTC)},
+	}
+	if !reflect.DeepEqual(comments, want) {
+		t.Errorf("got %+v\nwant %+v", comments, want)
+	}
+	if len(f.requests) != 2 {
+		t.Errorf("requests %v", f.requests)
+	}
+}
