@@ -393,10 +393,12 @@ func (w *workspace) facts(ctx context.Context, facts *publish.BuildFacts, task p
 	if facts.Commits, err = w.commits(ctx, "base.."+sha); err != nil {
 		return err
 	}
-	// A fix is judged on the commits it added after the reviewed head. When that head
-	// is not an ancestor the fix is refused as rewritten, so there is nothing to read.
+	// A fix is judged on the commits it added after the reviewed head. Commits that
+	// arrived through a merge of the base are excluded too (^base), as they are
+	// other people's. When the reviewed head is not an ancestor the fix is refused
+	// as rewritten, so there is nothing to read.
 	if task.Mode == publish.ModeFix && facts.PrevIsAncestor {
-		if facts.NewCommits, err = w.commits(ctx, task.PrevHead+".."+sha); err != nil {
+		if facts.NewCommits, err = w.commits(ctx, sha, "^"+task.PrevHead, "^base"); err != nil {
 			return err
 		}
 	}
@@ -416,8 +418,8 @@ func (w *workspace) facts(ctx context.Context, facts *publish.BuildFacts, task p
 }
 
 // commits lists the commits in a revision range, newest first.
-func (w *workspace) commits(ctx context.Context, rng string) ([]publish.GitCommit, error) {
-	log, err := w.git(ctx, "log", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x1e", rng)
+func (w *workspace) commits(ctx context.Context, rng ...string) ([]publish.GitCommit, error) {
+	log, err := w.git(ctx, append([]string{"log", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x1e"}, rng...)...)
 	if err != nil {
 		return nil, err
 	}

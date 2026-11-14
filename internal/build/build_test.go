@@ -307,6 +307,25 @@ func TestFixIgnoresCommitsBeforeTheReviewedHead(t *testing.T) {
 	}
 }
 
+func TestFixThatMergesAMainWithOthersCommits(t *testing.T) {
+	other := publish.Identity{Name: "Octo Maintainer", Email: "1+octo-maintainer@users.noreply.github.com"}
+	f := newFixture(t, publish.ModeFix)
+	// main advances with a commit that is not the builder's, after the reviewed head.
+	git(t, f.repo, builder, "checkout", "-q", "main")
+	f.commit(t, other, "chore: main moves", map[string]string{"docs.md": "# docs\n"})
+	git(t, f.repo, builder, "push", "-q", "origin", "main")
+	git(t, f.repo, builder, "checkout", "-q", "agent/232-fuel")
+	git(t, f.repo, builder, "merge", "-q", "--no-ff", "-m", "merge main", "main")
+	head := f.commit(t, builder, "fix(race): compare in laps", map[string]string{"race/fuel.go": "package race\n\nfunc Fuel() bool { return true }\n"})
+	write(t, f.work, "out/answer.md", "Answer to the review at `"+f.cfg.HeadSHA[:8]+"`:\n\n1. Fixed in `"+head[:8]+"`: laps.\n")
+	if code := Run(t.Context(), f.cfg, f.gh, logger()); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if got := f.originRef(t, "refs/heads/agent/232-fuel"); got != head {
+		t.Errorf("origin's branch is at %q, want %s", got, head)
+	}
+}
+
 func TestFixHeldForANewCommitThatIsNotTheBuilders(t *testing.T) {
 	other := publish.Identity{Name: "Octo Maintainer", Email: "1+octo-maintainer@users.noreply.github.com"}
 	f := newFixture(t, publish.ModeFix)
