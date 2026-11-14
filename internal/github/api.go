@@ -238,6 +238,104 @@ func (c *Client) ListComments(ctx context.Context, repo string, number int) ([]C
 	return comments, nil
 }
 
+// Review is one review of a pull request.
+type Review struct {
+	ID     int64
+	Author string
+	// State is APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED or PENDING.
+	State string
+	Body  string
+	// CommitSHA is the commit the review was submitted at.
+	CommitSHA string
+	// SubmittedAt is zero for a pending review, which GitHub sends without one.
+	SubmittedAt time.Time
+}
+
+// ListReviews returns every review of a pull request, oldest first.
+func (c *Client) ListReviews(ctx context.Context, repo string, number int) ([]Review, error) {
+	path, err := repoPath(repo)
+	if err != nil {
+		return nil, err
+	}
+	type reviewJSON struct {
+		ID          int64      `json:"id"`
+		User        *user      `json:"user"`
+		State       string     `json:"state"`
+		Body        *string    `json:"body"`
+		CommitID    string     `json:"commit_id"`
+		SubmittedAt *time.Time `json:"submitted_at"`
+	}
+	raw, err := pages[reviewJSON](ctx, c, fmt.Sprintf("%s/pulls/%d/reviews?per_page=100", path, number))
+	if err != nil {
+		return nil, err
+	}
+	reviews := make([]Review, 0, len(raw))
+	for _, r := range raw {
+		review := Review{ID: r.ID, Author: r.User.login(), State: r.State, CommitSHA: r.CommitID}
+		if r.Body != nil {
+			review.Body = *r.Body
+		}
+		if r.SubmittedAt != nil {
+			review.SubmittedAt = *r.SubmittedAt
+		}
+		reviews = append(reviews, review)
+	}
+	return reviews, nil
+}
+
+// ReviewComment is one inline comment on a pull request's diff.
+type ReviewComment struct {
+	ID int64
+	// ReviewID is the review the comment belongs to; 0 when GitHub names none.
+	ReviewID int64
+	Author   string
+	Body     string
+	Path     string
+	// Line is 0 when the line no longer exists in the diff (GitHub sends null).
+	Line int
+	// CommitSHA is the commit the comment was made at.
+	CommitSHA string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// ListReviewComments returns every inline review comment of a pull request,
+// oldest first.
+func (c *Client) ListReviewComments(ctx context.Context, repo string, number int) ([]ReviewComment, error) {
+	path, err := repoPath(repo)
+	if err != nil {
+		return nil, err
+	}
+	type reviewCommentJSON struct {
+		ID        int64     `json:"id"`
+		ReviewID  *int64    `json:"pull_request_review_id"`
+		User      *user     `json:"user"`
+		Body      string    `json:"body"`
+		Path      string    `json:"path"`
+		Line      *int      `json:"line"`
+		CommitID  string    `json:"commit_id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	raw, err := pages[reviewCommentJSON](ctx, c, fmt.Sprintf("%s/pulls/%d/comments?per_page=100", path, number))
+	if err != nil {
+		return nil, err
+	}
+	comments := make([]ReviewComment, 0, len(raw))
+	for _, r := range raw {
+		comment := ReviewComment{ID: r.ID, Author: r.User.login(), Body: r.Body, Path: r.Path, CommitSHA: r.CommitID,
+			CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+		if r.ReviewID != nil {
+			comment.ReviewID = *r.ReviewID
+		}
+		if r.Line != nil {
+			comment.Line = *r.Line
+		}
+		comments = append(comments, comment)
+	}
+	return comments, nil
+}
+
 // CreateComment posts a comment and returns its ID.
 func (c *Client) CreateComment(ctx context.Context, repo string, number int, body string) (int64, error) {
 	path, err := repoPath(repo)
