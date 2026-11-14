@@ -398,6 +398,7 @@ var buildPolicy = BuildPolicy{
 	ReadyLabel:      "agent-ready",
 	TriageLabel:     "needs triage",
 	HoldLabel:       "hold",
+	RetryLabel:      "retry",
 	ComponentPrefix: "component: ",
 	Components:      map[string]string{"component: org": "", "component: deploy": "those-who-run/paddock"},
 	Owner:           "those-who-run",
@@ -420,6 +421,15 @@ func readyIssue(change func(*Issue)) Issue {
 		change(&issue)
 	}
 	return issue
+}
+
+// retried adds a retry label event by the maintainer at each of the minutes.
+func retried(minutes ...int) func(*Issue) {
+	return func(i *Issue) {
+		for _, m := range minutes {
+			i.LabelEvents = append(i.LabelEvents, LabelEvent{Label: "retry", Actor: owner, Added: true, At: at(m)})
+		}
+	}
 }
 
 func TestDecideIssue(t *testing.T) {
@@ -484,6 +494,63 @@ func TestDecideIssue(t *testing.T) {
 		}), BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu"}},
 		{"a branch for the issue exists", readyIssue(func(i *Issue) { i.Branches = []string{"agent/232-fuel-callouts"} }),
 			BuildDecision{Reason: "branch-exists", Repo: "those-who-run/ecu"}},
+		{"no retry", readyIssue(nil),
+			BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu"}},
+		{"one retry", readyIssue(retried(20)),
+			BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu", Retries: 1}},
+		{"two retries", readyIssue(retried(20, 30)),
+			BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu", Retries: 2}},
+		{"a retry removed and added again is one more", readyIssue(func(i *Issue) {
+			retried(20, 40)(i)
+			i.LabelEvents = append(i.LabelEvents, LabelEvent{Label: "retry", Actor: owner, Added: false, At: at(30)})
+		}), BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu", Retries: 2}},
+		{"a stranger's retry", readyIssue(func(i *Issue) {
+			i.LabelEvents = append(i.LabelEvents, LabelEvent{Label: "retry", Actor: "someone-else", Added: true, At: at(20)})
+		}), BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu"}},
+		{"the builder's retry", readyIssue(func(i *Issue) {
+			i.LabelEvents = append(i.LabelEvents, LabelEvent{Label: "retry", Actor: builder, Added: true, At: at(20)})
+		}), BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu"}},
+		{"a retry older than the newest agent-ready", readyIssue(func(i *Issue) {
+			i.LabelEvents = append(i.LabelEvents,
+				LabelEvent{Label: "retry", Actor: owner, Added: true, At: at(5)},
+				LabelEvent{Label: "retry", Actor: owner, Added: true, At: at(12)},
+				LabelEvent{Label: "agent-ready", Actor: owner, Added: true, At: at(15)},
+				LabelEvent{Label: "retry", Actor: owner, Added: true, At: at(20)})
+		}), BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu", Retries: 1}},
+		{"a retry at the very moment of agent-ready", readyIssue(retried(10)),
+			BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu"}},
+		{"the builder's pull request opened before the retry", readyIssue(func(i *Issue) {
+			retried(50)(i)
+			i.LinkedPRs = []LinkedPR{{Repo: "those-who-run/ecu", Number: 31, Author: builder, CreatedAt: at(40)}}
+		}), BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu", Retries: 1}},
+		{"the builder's pull request opened after the retry", readyIssue(func(i *Issue) {
+			retried(30)(i)
+			i.LinkedPRs = []LinkedPR{{Repo: "those-who-run/ecu", Number: 31, Author: builder, CreatedAt: at(40)}}
+		}), BuildDecision{Reason: "already-built", Repo: "those-who-run/ecu"}},
+		{"a stranger's retry does not spend the builder's pull request", readyIssue(func(i *Issue) {
+			i.LabelEvents = append(i.LabelEvents, LabelEvent{Label: "retry", Actor: "someone-else", Added: true, At: at(50)})
+			i.LinkedPRs = []LinkedPR{{Repo: "those-who-run/ecu", Number: 31, Author: builder, CreatedAt: at(40)}}
+		}), BuildDecision{Reason: "already-built", Repo: "those-who-run/ecu"}},
+		{"a retry does not lift an open pull request", readyIssue(func(i *Issue) {
+			retried(20)(i)
+			i.LinkedPRs = []LinkedPR{{Repo: "those-who-run/ecu", Number: 30, Author: owner, Open: true, CreatedAt: at(2)}}
+		}), BuildDecision{Reason: "open-pull-request", Repo: "those-who-run/ecu"}},
+		{"a retry does not lift a branch", readyIssue(func(i *Issue) {
+			retried(20)(i)
+			i.Branches = []string{"agent/232-fuel-callouts"}
+		}), BuildDecision{Reason: "branch-exists", Repo: "those-who-run/ecu"}},
+		{"a retry does not lift a hold", readyIssue(func(i *Issue) {
+			retried(20)(i)
+			i.Labels = append(i.Labels, "hold")
+		}), BuildDecision{Reason: "hold"}},
+		{"a retry does not lift needs triage", readyIssue(func(i *Issue) {
+			retried(20)(i)
+			i.Labels = append(i.Labels, "needs triage")
+		}), BuildDecision{Reason: "needs-triage"}},
+		{"a retry without the ready label", readyIssue(func(i *Issue) {
+			retried(20)(i)
+			i.Labels = []string{"component: ecu", "retry"}
+		}), BuildDecision{Reason: "not-ready"}},
 		{"a branch for another issue with the same digits first", readyIssue(func(i *Issue) { i.Branches = []string{"agent/2320-other"} }),
 			BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: "those-who-run/ecu"}},
 	}
@@ -493,6 +560,15 @@ func TestDecideIssue(t *testing.T) {
 				t.Errorf("got %+v, want %+v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestWithNoRetryLabelRetriesDoNotCount(t *testing.T) {
+	policy := buildPolicy
+	policy.RetryLabel = ""
+	issue := readyIssue(retried(20))
+	if got := policy.Decide(issue); !got.Build || got.Retries != 0 {
+		t.Errorf("got %+v", got)
 	}
 }
 

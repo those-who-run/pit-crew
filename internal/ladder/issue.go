@@ -21,6 +21,9 @@ type BuildPolicy struct {
 	ReadyLabel  string
 	TriageLabel string
 	HoldLabel   string
+	// RetryLabel, added by the maintainer after the newest ready label, starts one
+	// more build for each time it is added. Empty means no retries.
+	RetryLabel string
 	// ComponentPrefix is the start of a label that names the repository the change
 	// lands in, such as `component: `.
 	ComponentPrefix string
@@ -77,6 +80,9 @@ type BuildDecision struct {
 	Reason string
 	// Repo is the repository the build lands in, when the labels name exactly one.
 	Repo string
+	// Retries is how many retry label events count for the issue; the build Job's
+	// name carries it when above zero.
+	Retries int
 }
 
 // Target returns the one repository an issue's component labels name, or a reason
@@ -127,13 +133,36 @@ func labelledAt(events []LabelEvent, label string) (LabelEvent, bool) {
 	return LabelEvent{}, false
 }
 
+// retries counts the events that added the retry label, by the maintainer, after
+// since, and returns the time of the newest one (the zero time with none).
+func (p BuildPolicy) retries(events []LabelEvent, since time.Time) (int, time.Time) {
+	if p.RetryLabel == "" {
+		return 0, time.Time{}
+	}
+	var n int
+	var newest time.Time
+	for _, e := range events {
+		if !e.Added || !strings.EqualFold(e.Label, p.RetryLabel) || !sameLogin(e.Actor, p.Maintainer) || !e.At.After(since) {
+			continue
+		}
+		n++
+		if e.At.After(newest) {
+			newest = e.At
+		}
+	}
+	return n, newest
+}
+
 // Decide says whether an open issue is due a build: it carries the ready label, the
 // maintainer put it there, it is neither untriaged nor held, its labels name one
 // repository the builder may work in, and nothing is being built for it already.
 //
 // One label event starts at most one build. A pull request the builder opened for
 // the issue after the label was added means that event is spent, whatever became of
-// the pull request; the maintainer adds the label again to ask for another.
+// the pull request; the maintainer adds the label again, or the retry label, to ask
+// for another. Retry label events count only when the maintainer added them after
+// the newest ready event; the pull request is compared against the newest of the
+// two.
 func (p BuildPolicy) Decide(issue Issue) BuildDecision {
 	if p.ReadyLabel == "" || !HasLabel(issue.Labels, p.ReadyLabel) {
 		return BuildDecision{Reason: "not-ready"}
@@ -155,11 +184,16 @@ func (p BuildPolicy) Decide(issue Issue) BuildDecision {
 	if reason != "" {
 		return BuildDecision{Reason: reason}
 	}
+	retries, newest := p.retries(issue.LabelEvents, event.At)
+	asked := event.At
+	if retries > 0 && newest.After(asked) {
+		asked = newest
+	}
 	for _, pr := range issue.LinkedPRs {
 		if pr.Open && (hasLogin(p.Authors, pr.Author) || sameLogin(pr.Author, p.Builder)) {
 			return BuildDecision{Reason: "open-pull-request", Repo: repo}
 		}
-		if sameLogin(pr.Author, p.Builder) && pr.CreatedAt.After(event.At) {
+		if sameLogin(pr.Author, p.Builder) && pr.CreatedAt.After(asked) {
 			return BuildDecision{Reason: "already-built", Repo: repo}
 		}
 	}
@@ -168,7 +202,7 @@ func (p BuildPolicy) Decide(issue Issue) BuildDecision {
 			return BuildDecision{Reason: "branch-exists", Repo: repo}
 		}
 	}
-	return BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: repo}
+	return BuildDecision{Build: true, Reason: "labelled-by-maintainer", Repo: repo, Retries: retries}
 }
 
 // Slug turns an issue title into the tail of a branch name: lower-case letters,
