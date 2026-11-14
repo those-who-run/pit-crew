@@ -115,6 +115,7 @@ Every `pit-crew` step reads these.
 | `LADDER_COMMITTERS` | same as authors | Logins that may commit one (add `web-flow` for GitHub's web merges) |
 | `LADDER_HOLD_LABEL` | `hold` | |
 | `LADDER_READY_LABEL` | `agent-ready` | |
+| `LADDER_RETRY_LABEL` | `retry` | On an issue, applied by the maintainer after the newest `agent-ready`: starts one more build; see [Retrying a build](#retrying-a-build) |
 | `LADDER_TRIAGE_LABEL` | `needs triage` | |
 | `LADDER_REREVIEW_LABEL` | `re-review` | On a pull request, applied by the maintainer after the review record at the head: the head counts as unreviewed again (the poller); `publish-review` takes it off once it has posted or held, or hands it back when the maintainer applied it after the fetch step read the pull request (so `publish-review` needs `LADDER_MAINTAINER` too) |
 | `LADDER_ISSUE_REPO` | `those-who-run/paddock` | Where issues live |
@@ -494,6 +495,25 @@ the body when the builder rewrote it and posts the answer with its fix marker. A
 fix whose pull request head moved since the fetch exits 11 and posts nothing. On refusal: the reasons and the agent's files go to the hold
 directory, exit 10. A refused build leaves nothing on GitHub, so the Job's TTL is
 its retry interval; the maintainer removes `agent-ready` to stop it.
+
+#### Retrying a build
+
+A build Job is named `build-<repo>-<issue>` and kept for its TTL, so a held or
+failed build cannot be started again under the same name, and re-applying
+`agent-ready` does not help. To retry, the maintainer applies the `retry` label
+(`LADDER_RETRY_LABEL`) to the issue. Every other gate stays as it was: the ready
+label must be present, and `needs triage`, `hold`, an open pull request or an
+existing `agent/<issue>-` branch still stop the build.
+
+- Only `labeled` events by the maintainer (`LADDER_MAINTAINER`) count, and only
+  those newer than the newest `agent-ready` event: applying `agent-ready` again
+  starts the count again.
+- With N such events (N above zero) the Job is named
+  `build-<repo>-<issue>-t<N>`; with none, as before.
+- A builder's pull request counts as "already built" only when it was opened
+  after the newest of the `agent-ready` event and the counted `retry` events.
+- pit-crew never removes the label. To retry again, the maintainer removes it and
+  applies it again, which is one more event, or applies `agent-ready` again.
 
 ### `pit-crew ready`
 

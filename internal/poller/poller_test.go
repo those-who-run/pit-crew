@@ -184,7 +184,7 @@ func policies() Policies {
 		Pull: ladder.Policy{Reviewer: reviewer, Builder: builder, Authors: []string{builder, owner}, HoldLabel: "hold",
 			Maintainer: owner, ReReviewLabel: "re-review"},
 		Build: ladder.BuildPolicy{Maintainer: owner, Builder: builder, Authors: []string{builder, owner}, ReadyLabel: "agent-ready",
-			TriageLabel: "needs triage", HoldLabel: "hold", ComponentPrefix: "component: ", Owner: "those-who-run",
+			TriageLabel: "needs triage", HoldLabel: "hold", RetryLabel: "retry", ComponentPrefix: "component: ", Owner: "those-who-run",
 			Repos: []string{"those-who-run/ecu"}},
 		IssueRepo: "those-who-run/paddock",
 	}
@@ -329,6 +329,37 @@ func TestAStrangersReReviewLabelChangesNothing(t *testing.T) {
 			}
 			if hb.Reasons["verdict-held"] != 1 || hb.Started != "" || len(j.created) != 0 {
 				t.Errorf("heartbeat %+v", hb)
+			}
+		})
+	}
+}
+
+func TestRetriesGiveTheBuildJobAnameOfItsOwn(t *testing.T) {
+	for name, c := range map[string]struct {
+		retries []time.Time
+		actor   string
+		want    string
+	}{
+		"none":               {nil, owner, "build-ecu-232"},
+		"one":                {[]time.Time{at(-30)}, owner, "build-ecu-232-t1"},
+		"two":                {[]time.Time{at(-30), at(-20)}, owner, "build-ecu-232-t2"},
+		"a stranger's retry": {[]time.Time{at(-30)}, "someone-else", "build-ecu-232"},
+		"older than ready":   {[]time.Time{at(-90)}, owner, "build-ecu-232"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := world()
+			k := key("those-who-run/paddock", 232)
+			for _, when := range c.retries {
+				src.timeline[k] = append(src.timeline[k], github.TimelineEvent{Event: "labeled", Actor: c.actor, Label: "retry", At: when})
+			}
+			j := &jobs{}
+			p := newPoller(t, src, j, Limits{StartJobs: true, TemplateDir: templates(t, "build"), MaxActive: 1})
+			hb, err := p.Run(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hb.Started != c.want {
+				t.Errorf("started %q, want %q", hb.Started, c.want)
 			}
 		})
 	}
@@ -733,6 +764,13 @@ func TestPoliciesFromEnv(t *testing.T) {
 	if p.Build.Maintainer != owner || p.Build.ReadyLabel != "agent-ready" || p.Build.TriageLabel != "needs triage" || p.Build.Owner != "those-who-run" ||
 		!reflect.DeepEqual(p.Build.Components, map[string]string{"component: org": "", "component: deploy": "those-who-run/paddock"}) {
 		t.Errorf("build %+v", p.Build)
+	}
+	if p.Build.RetryLabel != "retry" {
+		t.Errorf("default retry label %q", p.Build.RetryLabel)
+	}
+	custom, err := PoliciesFromEnv(env(map[string]string{"LADDER_RETRY_LABEL": "again"}))
+	if err != nil || custom.Build.RetryLabel != "again" {
+		t.Errorf("custom retry label %q %v", custom.Build.RetryLabel, err)
 	}
 	empty, err := PoliciesFromEnv(env(nil))
 	if err != nil || len(empty.Pull.Authors) != 0 || empty.Build.Maintainer != "" {
