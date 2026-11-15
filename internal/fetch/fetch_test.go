@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -107,7 +108,18 @@ func newOrigin(t *testing.T) origin {
 
 // source is GitHub's API for the fixture.
 type source struct {
-	pull github.PullRequest
+	pull           github.PullRequest
+	reviews        []github.Review
+	reviewComments []github.ReviewComment
+	reviewsErr     error
+	commentsErr    error
+}
+
+func (s source) ListReviews(context.Context, string, int) ([]github.Review, error) {
+	return s.reviews, s.reviewsErr
+}
+func (s source) ListReviewComments(context.Context, string, int) ([]github.ReviewComment, error) {
+	return s.reviewComments, s.commentsErr
 }
 
 func (s source) GetPull(context.Context, string, int) (github.PullRequest, error) { return s.pull, nil }
@@ -361,6 +373,100 @@ func TestFix(t *testing.T) {
 	for _, want := range []string{"Kind: fix, round 1 of 2", "comment with id 9", "twr-fix-review/SKILL.md", "answer.md"} {
 		if !strings.Contains(statement, want) {
 			t.Errorf("task.md lacks %q", want)
+		}
+	}
+}
+
+func withReviews(o origin) source {
+	return source{pull: pull(o),
+		reviews: []github.Review{
+			{ID: 71, Author: "octo-maintainer", State: "CHANGES_REQUESTED", Body: "Two things to fix.", CommitSHA: o.headSHA},
+			{ID: 72, Author: "octo-maintainer", State: "COMMENTED", Body: "Also this.", CommitSHA: o.headSHA},
+		},
+		reviewComments: []github.ReviewComment{
+			{ID: 81, ReviewID: 71, Author: "octo-maintainer", Body: "Use laps here.", Path: "race/fuel.go", Line: 3, CommitSHA: o.headSHA},
+			{ID: 82, ReviewID: 71, Author: "octo-maintainer", Body: "And here.", Path: "race/fuel.go", CommitSHA: o.headSHA},
+		}}
+}
+
+// AC1: a review and a fix get both files, in the order the source returned them.
+func TestReviewsAndReviewCommentsAreWritten(t *testing.T) {
+	o := newOrigin(t)
+	for _, kind := range []string{KindReview, KindFix} {
+		t.Run(kind, func(t *testing.T) {
+			cfg, dir := config(t, o, kind)
+			src := withReviews(o)
+			if code := Run(t.Context(), cfg, src, logger()); code != ExitOK {
+				t.Fatalf("exit %d", code)
+			}
+			var reviews []github.Review
+			if err := json.Unmarshal([]byte(read(t, filepath.Join(dir, DataDir, "reviews.json"))), &reviews); err != nil || !reflect.DeepEqual(reviews, src.reviews) {
+				t.Errorf("reviews.json = %+v, %v; want %+v", reviews, err, src.reviews)
+			}
+			var comments []github.ReviewComment
+			if err := json.Unmarshal([]byte(read(t, filepath.Join(dir, DataDir, "review-comments.json"))), &comments); err != nil || !reflect.DeepEqual(comments, src.reviewComments) {
+				t.Errorf("review-comments.json = %+v, %v; want %+v", comments, err, src.reviewComments)
+			}
+			statement := read(t, filepath.Join(dir, DataDir, "task.md"))
+			for _, want := range []string{"reviews.json", "review-comments.json"} {
+				if !strings.Contains(statement, want) {
+					t.Errorf("task.md lacks %q", want)
+				}
+			}
+		})
+	}
+}
+
+// AC2: no reviews is [], not null and not a missing file.
+func TestNoReviewsWritesEmptyLists(t *testing.T) {
+	o := newOrigin(t)
+	for _, kind := range []string{KindReview, KindFix} {
+		t.Run(kind, func(t *testing.T) {
+			cfg, dir := config(t, o, kind)
+			if code := Run(t.Context(), cfg, source{pull: pull(o)}, logger()); code != ExitOK {
+				t.Fatalf("exit %d", code)
+			}
+			for _, name := range []string{"reviews.json", "review-comments.json"} {
+				if got := strings.TrimSpace(read(t, filepath.Join(dir, DataDir, name))); got != "[]" {
+					t.Errorf("%s = %q, want []", name, got)
+				}
+			}
+		})
+	}
+}
+
+// AC3: a build reads and writes neither.
+func TestBuildWritesNoReviewFiles(t *testing.T) {
+	o := newOrigin(t)
+	cfg, dir := config(t, o, KindBuild)
+	if code := Run(t.Context(), cfg, withReviews(o), logger()); code != ExitOK {
+		t.Fatalf("exit %d", code)
+	}
+	for _, name := range []string{"reviews.json", "review-comments.json"} {
+		if _, err := os.Stat(filepath.Join(dir, DataDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s exists for a build: %v", name, err)
+		}
+	}
+	if statement := read(t, filepath.Join(dir, DataDir, "task.md")); strings.Contains(statement, "reviews.json") {
+		t.Error("a build's task.md names reviews.json")
+	}
+}
+
+// R3: a failed read fails the step.
+func TestAFailedReviewReadFailsTheStep(t *testing.T) {
+	o := newOrigin(t)
+	boom := errors.New("boom")
+	for name, src := range map[string]source{
+		"reviews":         {pull: pull(o), reviewsErr: boom},
+		"review comments": {pull: pull(o), commentsErr: boom},
+	} {
+		for _, kind := range []string{KindReview, KindFix} {
+			t.Run(name+" "+kind, func(t *testing.T) {
+				cfg, _ := config(t, o, kind)
+				if code := Run(t.Context(), cfg, src, logger()); code != ExitFailed {
+					t.Errorf("exit %d", code)
+				}
+			})
 		}
 	}
 }
