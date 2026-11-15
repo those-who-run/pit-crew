@@ -7,6 +7,7 @@ package poller
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/those-who-run/pit-crew/internal/github"
 	"github.com/those-who-run/pit-crew/internal/ladder"
@@ -18,6 +19,7 @@ type Source interface {
 	ListOpenPulls(ctx context.Context, repo string) ([]github.PullRequest, error)
 	ListPullCommits(ctx context.Context, repo string, number int) ([]github.Commit, error)
 	ListComments(ctx context.Context, repo string, number int) ([]github.Comment, error)
+	ListReviews(ctx context.Context, repo string, number int) ([]github.Review, error)
 	ListStatuses(ctx context.Context, repo, sha string) ([]github.Status, error)
 	ListChecks(ctx context.Context, repo, sha string) (map[string]string, error)
 	ListRequiredChecks(ctx context.Context, repo, branch string) ([]string, error)
@@ -79,6 +81,17 @@ func Gather(ctx context.Context, src Source, policy ladder.Policy, pr github.Pul
 	}
 	for _, c := range comments {
 		out.Comments = append(out.Comments, ladder.Comment{ID: c.ID, Author: c.Author, Body: c.Body, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt})
+	}
+	if policy.Maintainer != "" && policy.Builder != "" && strings.EqualFold(pr.Author, policy.Builder) {
+		// Only a builder's pull request is fixed by the builder, so only there does
+		// the maintainer's review matter; the rest spare the rate limit.
+		reviews, err := src.ListReviews(ctx, pr.Repo, pr.Number)
+		if err != nil {
+			return out, err
+		}
+		for _, r := range reviews {
+			out.Reviews = append(out.Reviews, ladder.Review{Author: r.Author, State: r.State, CommitSHA: r.CommitSHA, SubmittedAt: r.SubmittedAt})
+		}
 	}
 	statuses, err := src.ListStatuses(ctx, pr.Repo, pr.HeadSHA)
 	if err != nil {

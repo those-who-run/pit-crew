@@ -197,7 +197,18 @@ What is due on a pull request in the ladder, decided from what GitHub holds
   is `publish-review` handing back an ask its review did not answer (below). The
   label's event is read from the pull request's timeline, and only when the
   label is on;
-- `fix` or `stuck` when the verdict is `changes` on a builder's pull request;
+- `fix` or `stuck` when the verdict is `changes` on a builder's pull request
+  (`changes-asked`), or when the maintainer's (`LADDER_MAINTAINER`) newest
+  review at the head is `CHANGES_REQUESTED` and newer than the builder's last
+  fix answer, whatever the verdict (`maintainer-changes-asked`). It is checked
+  after the missing-review, `re-review` and `answered-since-review` cases and
+  before the verdict is read, so such a pull request is never `ready`. A later
+  `APPROVED` or `DISMISSED` review from the maintainer at the same head cancels
+  the request; a `COMMENTED` one neither counts nor cancels; a review from any
+  other login, or at another head, counts for nothing. On a pull request the
+  builder did not author the decision is `changes-left-to-author`. The reviews
+  are read only for the builder's pull requests, and only when
+  `LADDER_MAINTAINER` is set;
 - `ready` when the verdict is `ready` or `nits` and every required check is
   green;
 - otherwise nothing, with the reason (`verdict-held`, `checks-pending`, …).

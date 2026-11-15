@@ -59,6 +59,16 @@ type Status struct {
 	CreatedAt time.Time
 }
 
+// Review is one submitted review of a pull request, as GitHub records it.
+type Review struct {
+	Author string
+	// State is APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED or PENDING.
+	State string
+	// CommitSHA is the commit the review was submitted at.
+	CommitSHA   string
+	SubmittedAt time.Time
+}
+
 // PullRequest is what the ladder reads about one open pull request.
 type PullRequest struct {
 	// Repo is the base repository, as owner/name.
@@ -77,6 +87,9 @@ type PullRequest struct {
 	LabelEvents []LabelEvent
 	Commits     []Commit
 	Comments    []Comment
+	// Reviews are the pull request's reviews, read only for a builder's pull
+	// request and only when a maintainer is configured.
+	Reviews []Review
 	// Statuses are the commit statuses on HeadSHA.
 	Statuses []Status
 	// Checks is the state of each check on HeadSHA by name, check runs and commit
@@ -290,6 +303,34 @@ func (p Policy) ReReviews(pr PullRequest) int {
 	return n
 }
 
+// MaintainerChangesAsked reports whether the maintainer's review asks for changes
+// at the head: the maintainer's newest review submitted at the head, leaving out
+// COMMENTED and PENDING ones, is CHANGES_REQUESTED, and it is newer than lastFix,
+// the builder's last fix answer (zero when there is none). A later APPROVED or
+// DISMISSED review from the maintainer at the same head cancels it. A review from
+// any other login, or at another commit, counts for nothing; with no Maintainer
+// configured nothing counts.
+func (p Policy) MaintainerChangesAsked(reviews []Review, headSHA string, lastFix time.Time) bool {
+	if p.Maintainer == "" || headSHA == "" {
+		return false
+	}
+	var newest Review
+	found := false
+	for _, r := range reviews {
+		if !sameLogin(r.Author, p.Maintainer) || r.CommitSHA != headSHA || r.SubmittedAt.IsZero() {
+			continue
+		}
+		if r.State != "CHANGES_REQUESTED" && r.State != "APPROVED" && r.State != "DISMISSED" {
+			continue
+		}
+		// Reviews arrive oldest first; of two at the same instant the later one wins.
+		if !found || !r.SubmittedAt.Before(newest.SubmittedAt) {
+			newest, found = r, true
+		}
+	}
+	return found && newest.State == "CHANGES_REQUESTED" && newest.SubmittedAt.After(lastFix)
+}
+
 // ChecksGreen reports whether every required check on the head is green, and if not
 // a word for why. With no required checks known, every check reported must be green
 // and there must be at least one: an empty list never passes by default. The
@@ -327,8 +368,10 @@ func ChecksGreen(pr PullRequest) (bool, string) {
 //   - review: the pull request is in the ladder and has no review record at its head,
 //     the maintainer has asked for the head again with the re-review label, or the
 //     builder has answered since the last one.
-//   - fix: a builder's pull request whose verdict at the head is changes, with fewer
-//     than MaxFixRounds rounds answered.
+//   - fix: a builder's pull request whose verdict at the head is changes, or on
+//     which the maintainer's newest review at the head requests changes and is newer
+//     than the last fix answer (`maintainer-changes-asked`, whatever the verdict),
+//     with fewer than MaxFixRounds rounds answered.
 //   - stuck: the same, with the rounds used up.
 //   - ready: the verdict at the head is ready or nits and every required check is
 //     green.
@@ -350,6 +393,15 @@ func (p Policy) Decide(pr PullRequest) Decision {
 		// An answer that contests every item pushes nothing, so the head stays where
 		// it was. The reviewer still owes it a read.
 		return Decision{Work: WorkReview, Reason: "answered-since-review", Round: rounds}
+	}
+	if p.MaintainerChangesAsked(pr.Reviews, pr.HeadSHA, lastFix) {
+		switch {
+		case !sameLogin(pr.Author, p.Builder):
+			return Decision{Work: WorkNone, Reason: "changes-left-to-author", Verdict: record.verdict}
+		case rounds >= MaxFixRounds:
+			return Decision{Work: WorkStuck, Reason: "fix-rounds-used", Round: rounds, Verdict: record.verdict}
+		}
+		return Decision{Work: WorkFix, Reason: "maintainer-changes-asked", Round: rounds + 1, Verdict: record.verdict}
 	}
 	switch record.verdict {
 	case VerdictChanges:

@@ -639,3 +639,89 @@ func TestReReviewAskedAfter(t *testing.T) {
 		t.Error("with no maintainer configured, an ask counted")
 	}
 }
+
+// TestDecideMaintainerChanges covers the maintainer's request for changes at the
+// head, which starts a fix whatever the reviewer's verdict is.
+func TestDecideMaintainerChanges(t *testing.T) {
+	other := "1111111111111111111111111111111111111111"
+	asked := func(state string, minutes int) Review {
+		return Review{Author: owner, State: state, CommitSHA: head, SubmittedAt: at(minutes)}
+	}
+	with := func(verdict Verdict, reviews ...Review) func(*PullRequest) {
+		return func(pr *PullRequest) {
+			pr.Comments = append(pr.Comments, reviewComment(head, verdict, 10))
+			pr.Reviews = reviews
+		}
+	}
+	cases := []struct {
+		name string
+		pr   PullRequest
+		pol  *Policy
+		want Decision
+	}{
+		{"request at head, verdict ready", builderPR(with(VerdictReady, asked("CHANGES_REQUESTED", 20))),
+			nil, Decision{Work: WorkFix, Reason: "maintainer-changes-asked", Round: 1, Verdict: VerdictReady}},
+		{"request at head, verdict nits", builderPR(with(VerdictNits, asked("CHANGES_REQUESTED", 20))),
+			nil, Decision{Work: WorkFix, Reason: "maintainer-changes-asked", Round: 1, Verdict: VerdictNits}},
+		{"request at head, verdict changes", builderPR(with(VerdictChanges, asked("CHANGES_REQUESTED", 20))),
+			nil, Decision{Work: WorkFix, Reason: "maintainer-changes-asked", Round: 1, Verdict: VerdictChanges}},
+		{"request before the review record", builderPR(with(VerdictNits, asked("CHANGES_REQUESTED", 5))),
+			nil, Decision{Work: WorkFix, Reason: "maintainer-changes-asked", Round: 1, Verdict: VerdictNits}},
+		{"request at an older head", builderPR(with(VerdictNits, Review{Author: owner, State: "CHANGES_REQUESTED", CommitSHA: other, SubmittedAt: at(20)})),
+			nil, Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictNits}},
+		{"only a comment", builderPR(with(VerdictNits, asked("COMMENTED", 20))),
+			nil, Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictNits}},
+		{"a comment after a request does not cancel it", builderPR(with(VerdictNits, asked("CHANGES_REQUESTED", 20), asked("COMMENTED", 25))),
+			nil, Decision{Work: WorkFix, Reason: "maintainer-changes-asked", Round: 1, Verdict: VerdictNits}},
+		{"a later approval cancels it", builderPR(with(VerdictNits, asked("CHANGES_REQUESTED", 20), asked("APPROVED", 25))),
+			nil, Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictNits}},
+		{"a later dismissal cancels it", builderPR(with(VerdictNits, asked("CHANGES_REQUESTED", 20), asked("DISMISSED", 25))),
+			nil, Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictNits}},
+		{"a request after an approval counts", builderPR(with(VerdictNits, asked("APPROVED", 20), asked("CHANGES_REQUESTED", 25))),
+			nil, Decision{Work: WorkFix, Reason: "maintainer-changes-asked", Round: 1, Verdict: VerdictNits}},
+		{"a stranger's request", builderPR(with(VerdictNits, Review{Author: "someone-else", State: "CHANGES_REQUESTED", CommitSHA: head, SubmittedAt: at(20)})),
+			nil, Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictNits}},
+		{"a stranger's approval does not cancel", builderPR(with(VerdictNits, asked("CHANGES_REQUESTED", 20), Review{Author: "someone-else", State: "APPROVED", CommitSHA: head, SubmittedAt: at(25)})),
+			nil, Decision{Work: WorkFix, Reason: "maintainer-changes-asked", Round: 1, Verdict: VerdictNits}},
+		{"a pending review", builderPR(with(VerdictNits, Review{Author: owner, State: "CHANGES_REQUESTED", CommitSHA: head})),
+			nil, Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictNits}},
+		{"a request older than the last fix answer", builderPR(func(pr *PullRequest) {
+			with(VerdictNits, asked("CHANGES_REQUESTED", 20))(pr)
+			pr.Comments = append(pr.Comments, fixComment(builder, 1, 30), reviewComment(head, VerdictNits, 35))
+		}), nil, Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictNits}},
+		{"a request newer than the last fix answer", builderPR(func(pr *PullRequest) {
+			pr.Comments = append(pr.Comments, fixComment(builder, 1, 12), reviewComment(head, VerdictNits, 15))
+			pr.Reviews = []Review{asked("CHANGES_REQUESTED", 20)}
+		}), nil, Decision{Work: WorkFix, Reason: "maintainer-changes-asked", Round: 2, Verdict: VerdictNits}},
+		{"rounds used up", builderPR(func(pr *PullRequest) {
+			pr.Comments = append(pr.Comments, fixComment(builder, 1, 2), fixComment(builder, 2, 4), reviewComment(head, VerdictNits, 10))
+			pr.Reviews = []Review{asked("CHANGES_REQUESTED", 20)}
+		}), nil, Decision{Work: WorkStuck, Reason: "fix-rounds-used", Round: 2, Verdict: VerdictNits}},
+		{"not the builder's pull request", func() PullRequest {
+			pr := builderPR(with(VerdictReady, asked("CHANGES_REQUESTED", 20)))
+			pr.Author = owner
+			pr.Commits = []Commit{{SHA: head, Author: owner, Committer: owner}}
+			return pr
+		}(), nil, Decision{Work: WorkNone, Reason: "changes-left-to-author", Verdict: VerdictReady}},
+		{"no maintainer configured", builderPR(with(VerdictNits, asked("CHANGES_REQUESTED", 20))),
+			func() *Policy { p := policy; p.Maintainer = ""; return &p }(),
+			Decision{Work: WorkReady, Reason: "verdict-and-checks", Verdict: VerdictNits}},
+		{"no review record at the head comes first", builderPR(func(pr *PullRequest) { pr.Reviews = []Review{asked("CHANGES_REQUESTED", 20)} }),
+			nil, Decision{Work: WorkReview, Reason: "no-review-at-head"}},
+		{"a re-review ask comes first", builderPR(func(pr *PullRequest) {
+			with(VerdictNits, asked("CHANGES_REQUESTED", 20))(pr)
+			reReviewed(pr, owner, 30)
+		}), nil, Decision{Work: WorkReview, Reason: "re-review"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := policy
+			if c.pol != nil {
+				p = *c.pol
+			}
+			if got := p.Decide(c.pr); got != c.want {
+				t.Fatalf("Decide = %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}

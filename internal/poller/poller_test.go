@@ -40,9 +40,12 @@ type source struct {
 	commits  map[string][]github.Commit
 	comments map[string][]github.Comment
 	statuses map[string][]github.Status
-	checks   map[string]map[string]string
-	required map[string][]string
-	issues   []github.Issue
+	reviews  map[string][]github.Review
+	// reviewCalls counts the pull requests whose reviews were read.
+	reviewCalls []string
+	checks      map[string]map[string]string
+	required    map[string][]string
+	issues      []github.Issue
 	// timeline holds label events by repo#number, for issues and pull requests
 	// alike, as GitHub's issue timeline does.
 	timeline map[string][]github.TimelineEvent
@@ -69,6 +72,10 @@ func (s *source) ListPullCommits(_ context.Context, repo string, n int) ([]githu
 }
 func (s *source) ListComments(_ context.Context, repo string, n int) ([]github.Comment, error) {
 	return s.comments[key(repo, n)], nil
+}
+func (s *source) ListReviews(_ context.Context, repo string, n int) ([]github.Review, error) {
+	s.reviewCalls = append(s.reviewCalls, key(repo, n))
+	return s.reviews[key(repo, n)], nil
 }
 func (s *source) ListStatuses(_ context.Context, _, sha string) ([]github.Status, error) {
 	return s.statuses[sha], nil
