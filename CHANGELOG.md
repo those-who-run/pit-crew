@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.7](https://github.com/those-who-run/pit-crew/compare/v0.1.6...v0.1.7) (2026-11-15)
+
+
+### Features
+
+* **github:** list a pull request's reviews and review comments ([83a8cd8](https://github.com/those-who-run/pit-crew/commit/83a8cd89c16de5e76cdb2a88b755b568c8d07f41))
+* **pit-crew:** list a pull request's reviews and review comments ([#24](https://github.com/those-who-run/pit-crew/issues/24)) ([83a8cd8](https://github.com/those-who-run/pit-crew/commit/83a8cd89c16de5e76cdb2a88b755b568c8d07f41))
+* **poller:** a retry label from the maintainer starts another build ([#26](https://github.com/those-who-run/pit-crew/issues/26)) ([a179b29](https://github.com/those-who-run/pit-crew/commit/a179b294fb717c0e3e17e830dadfa34e9509d3ed))
+
+
+### Bug Fixes
+
+* **publish:** judge a fix on the commits it added, not the whole branch ([#25](https://github.com/those-who-run/pit-crew/issues/25)) ([7529887](https://github.com/those-who-run/pit-crew/commit/7529887aae18ff9515c1b2f60f90b0a4bd179f4b))
+
 ## [0.1.6](https://github.com/those-who-run/pit-crew/compare/v0.1.5...v0.1.6) (2026-11-12)
 
 
