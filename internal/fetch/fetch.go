@@ -132,6 +132,8 @@ type Source interface {
 	GetPull(ctx context.Context, repo string, number int) (github.PullRequest, error)
 	ListPullCommits(ctx context.Context, repo string, number int) ([]github.Commit, error)
 	ListComments(ctx context.Context, repo string, number int) ([]github.Comment, error)
+	ListReviews(ctx context.Context, repo string, number int) ([]github.Review, error)
+	ListReviewComments(ctx context.Context, repo string, number int) ([]github.ReviewComment, error)
 	GetIssue(ctx context.Context, repo string, number int) (github.Issue, error)
 }
 
@@ -336,6 +338,20 @@ func run(ctx context.Context, cfg Config, src Source, logger *slog.Logger) (int,
 		if err := writeJSON(filepath.Join(data, "comments.json"), comments); err != nil {
 			return ExitFailed, err
 		}
+		reviews, err := src.ListReviews(ctx, cfg.Repo, cfg.Number)
+		if err != nil {
+			return ExitFailed, err
+		}
+		if err := writeJSON(filepath.Join(data, "reviews.json"), nonNil(reviews)); err != nil {
+			return ExitFailed, err
+		}
+		reviewComments, err := src.ListReviewComments(ctx, cfg.Repo, cfg.Number)
+		if err != nil {
+			return ExitFailed, err
+		}
+		if err := writeJSON(filepath.Join(data, "review-comments.json"), nonNil(reviewComments)); err != nil {
+			return ExitFailed, err
+		}
 		issues = ladder.IssueRefs(pr.Body)
 		if len(issues) > 0 {
 			task.IssueRepo, task.Issue = issues[0].Repo, issues[0].Number
@@ -522,6 +538,14 @@ func writeIssue(ctx context.Context, src Source, data string, ref ladder.IssueRe
 	return writeJSON(filepath.Join(data, "issues", name), map[string]any{"issue": issue, "comments": comments})
 }
 
+// nonNil makes an empty list marshal as [] and not null.
+func nonNil[T any](list []T) []T {
+	if list == nil {
+		return []T{}
+	}
+	return list
+}
+
 func writeFile(p string, data []byte) error {
 	return os.WriteFile(p, data, 0o600)
 }
@@ -554,7 +578,7 @@ func reviewStatement(task Task, dir string, swapped bool) string {
 	}
 	return fmt.Sprintf("## This task\n\n- Kind: review\n- Pull request: %s#%d, by %s\n- Head SHA: %s\n- Base: %s at %s\n- Lane: %s\n%s"+
 		"- The checkout is at the head SHA. The diff to review is `git diff %s...%s`.\n%s"+
-		"- pr.json, commits.json, comments.json and issues/ in the data files hold the pull request, its commits, its conversation and the linked issues.\n"+
+		"- pr.json, commits.json, comments.json, reviews.json, review-comments.json and issues/ in the data files hold the pull request, its commits, its conversation, its reviews, its inline review comments and the linked issues.\n"+
 		"- Write comment.md, private.md (only if needed) and verdict.json to the output folder, as the brief says.\n",
 		task.Repo, task.Number, task.Author, task.HeadSHA, task.BaseRef, task.BaseSHA, task.Lane, common(task, dir),
 		task.BaseSHA, task.HeadSHA, note)
@@ -582,7 +606,7 @@ func fixStatement(task Task, dir string, comments []github.Comment) string {
 		}
 	}
 	return fmt.Sprintf("## This task\n\n- Kind: fix, round %d of %d\n- Pull request: %s#%d, your own, on branch %s at head %s\n- Base: %s at %s\n%s"+
-		"- The review to answer is the comment with id %s in comments.json (the newest review of this head); earlier reviews and answers are there too.\n"+
+		"- The review to answer is the comment with id %s in comments.json (the newest review of this head); earlier reviews and answers are there too. reviews.json and review-comments.json hold the pull request's reviews and their inline comments.\n"+
 		"- Follow the twr-fix-review skill at %s/agent/skills/twr-fix-review/SKILL.md. Commit fixes on the branch; never amend, rebase or force; do not push.\n"+
 		"- Write your answer, in the form the skill gives, to answer.md in the output folder. Do not add a marker; the publisher adds it.\n",
 		task.Round, ladder.MaxFixRounds, task.Repo, task.Number, task.Branch, task.HeadSHA, task.BaseRef, task.BaseSHA, common(task, dir),

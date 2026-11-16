@@ -322,6 +322,8 @@ What it writes under `/work/data`:
 | `pr.json` | The pull request: title, body, author, labels, head, base |
 | `commits.json` | Its commits: SHA, author and committer logins and addresses, message |
 | `comments.json` | Its conversation comments, oldest first |
+| `reviews.json` | For a review or a fix: its reviews, in the order GitHub returns them (oldest first), `[]` when there are none. Each has `ID`, `Author`, `State` (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED` or `PENDING`), `Body`, `CommitSHA` (the commit it was submitted at) and `SubmittedAt` (the zero time for a pending review). A failed read fails the step |
+| `review-comments.json` | For a review or a fix: its inline review comments, in the order GitHub returns them, `[]` when there are none. Each has `ID`, `ReviewID` (0 when none), `Author`, `Body`, `Path`, `Line` (0 when the line is no longer in the diff), `CommitSHA`, `CreatedAt` and `UpdatedAt`. A failed read fails the step |
 | `changes.tsv` | `git diff --name-status base...head` |
 | `lane` | `light`, `standard` or `sensitive` |
 | `issues/<owner>-<name>-<number>.json` | Each linked issue (from the body's `Closes`/`Part of` lines, or the build's issue) with its comments |
