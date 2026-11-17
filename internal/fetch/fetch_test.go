@@ -112,6 +112,7 @@ type source struct {
 	reviews        []github.Review
 	reviewComments []github.ReviewComment
 	reviewsErr     error
+	noReviewer     bool
 	commentsErr    error
 }
 
@@ -129,6 +130,9 @@ func (s source) ListPullCommits(context.Context, string, int) ([]github.Commit, 
 func (s source) ListComments(_ context.Context, repo string, _ int) ([]github.Comment, error) {
 	if strings.HasSuffix(repo, "paddock") {
 		return []github.Comment{{ID: 5, Author: "octo-maintainer", Body: "Decision: laps, not litres."}}, nil
+	}
+	if s.noReviewer {
+		return nil, nil
 	}
 	return []github.Comment{{ID: 9, Author: "twr-reviewer[bot]", Body: "Review\n\n<!-- twr-review sha=" + s.pull.HeadSHA + " kind=A lane=standard verdict=changes -->"}}, nil
 }
@@ -567,5 +571,62 @@ func TestTaskRecordsWhenThePullRequestWasRead(t *testing.T) {
 		if !strings.Contains(raw, `"fetched_at": "2026-11-08T08:30:15Z"`) {
 			t.Errorf("%s: task.json %s", kind, raw)
 		}
+	}
+}
+
+// AC1, AC2: what the fix statement names, for the maintainer's request alone, the
+// reviewer's comment alone, both, an empty FETCH_MAINTAINER, and a stranger's request.
+func TestFixStatementNamesTheMaintainersReview(t *testing.T) {
+	o := newOrigin(t)
+	at := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	request := func(author string) []github.Review {
+		return []github.Review{{ID: 71, Author: author, State: "CHANGES_REQUESTED", CommitSHA: o.headSHA, SubmittedAt: at}}
+	}
+	const maintainerLine = "the one with id 71 in reviews.json"
+	const inlineLine = "review-comments.json with review id 71"
+	const reviewerLine = "comment with id 9 in comments.json"
+	const orderLine = "the maintainer's comes first"
+	cases := []struct {
+		name       string
+		maintainer string
+		reviews    []github.Review
+		noReviewer bool
+		want, not  []string
+	}{
+		{"maintainer only", "octo-maintainer", request("octo-maintainer"), true, []string{maintainerLine, inlineLine}, []string{reviewerLine, orderLine}},
+		{"reviewer only", "octo-maintainer", nil, false, []string{reviewerLine}, []string{maintainerLine, inlineLine, orderLine}},
+		{"both", "octo-maintainer", request("octo-maintainer"), false, []string{maintainerLine, inlineLine, reviewerLine, orderLine}, nil},
+		{"empty FETCH_MAINTAINER", "", request("octo-maintainer"), false, []string{reviewerLine}, []string{maintainerLine, inlineLine, orderLine}},
+		{"a stranger's request", "octo-maintainer", request("octo-stranger"), false, []string{reviewerLine}, []string{maintainerLine, inlineLine, orderLine, "id 71"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, dir := config(t, o, KindFix)
+			cfg.Maintainer = c.maintainer
+			src := source{pull: pull(o), reviews: c.reviews, noReviewer: c.noReviewer}
+			if code := Run(t.Context(), cfg, src, logger()); code != ExitOK {
+				t.Fatalf("exit %d", code)
+			}
+			statement := read(t, filepath.Join(dir, DataDir, "task.md"))
+			for _, w := range c.want {
+				if !strings.Contains(statement, w) {
+					t.Errorf("task.md lacks %q:\n%s", w, statement)
+				}
+			}
+			for _, w := range c.not {
+				if strings.Contains(statement, w) {
+					t.Errorf("task.md holds %q:\n%s", w, statement)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigFromEnvReadsMaintainer(t *testing.T) {
+	env := map[string]string{"FETCH_KIND": "review", "FETCH_REPO": "those-who-run/ecu", "FETCH_NUMBER": "1", "FETCH_HEAD_SHA": "0123456789abcdef0123456789abcdef01234567",
+		"FETCH_AGENT_REF": "v0.2.16", "FETCH_MAINTAINER": "octo-maintainer"}
+	cfg, err := ConfigFromEnv(func(k string) string { return env[k] })
+	if err != nil || cfg.Maintainer != "octo-maintainer" {
+		t.Errorf("maintainer %q, err %v", cfg.Maintainer, err)
 	}
 }
