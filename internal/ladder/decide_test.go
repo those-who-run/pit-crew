@@ -725,3 +725,27 @@ func TestDecideMaintainerChanges(t *testing.T) {
 		})
 	}
 }
+
+// TestMaintainerChangesReviewNamesTheReview: the review the poller's decision acts on
+// is the one the fix statement names, and a stranger's is neither.
+func TestMaintainerChangesReviewNamesTheReview(t *testing.T) {
+	at := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	p := Policy{Maintainer: "octo-maintainer"}
+	reviews := []Review{
+		{ID: 1, Author: "octo-maintainer", State: "CHANGES_REQUESTED", CommitSHA: "abc", SubmittedAt: at},
+		{ID: 2, Author: "octo-stranger", State: "APPROVED", CommitSHA: "abc", SubmittedAt: at.Add(time.Hour)},
+	}
+	got, ok := p.MaintainerChangesReview(reviews, "abc", time.Time{})
+	if !ok || got.ID != 1 {
+		t.Fatalf("got %+v, %v", got, ok)
+	}
+	if ok2 := p.MaintainerChangesAsked(reviews, "abc", time.Time{}); !ok2 {
+		t.Error("MaintainerChangesAsked disagrees")
+	}
+	if _, ok := p.MaintainerChangesReview(reviews, "abc", at.Add(time.Minute)); ok {
+		t.Error("a review older than the last fix still counts")
+	}
+	if _, ok := p.MaintainerChangesReview(reviews[1:], "abc", time.Time{}); ok {
+		t.Error("a stranger's review counts")
+	}
+}

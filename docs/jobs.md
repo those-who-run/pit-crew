@@ -317,6 +317,7 @@ files, works out the lane, and prepares the working tree.
 | `FETCH_AGENT_REPO` | `those-who-run/.github` |
 | `FETCH_AGENT_REF` | The release tag of `.github` to read briefs and skills from (required) |
 | `FETCH_DIR` | `/work` |
+| `FETCH_MAINTAINER` | The maintainer's login (fix). When their review at the head asks for changes, by the ladder's rule (`LADDER_MAINTAINER`), the task statement names it by id in `reviews.json` and its inline comments in `review-comments.json`, and says it comes before the reviewer's comment. Empty names no review |
 | `FETCH_BUILDER_NAME`, `FETCH_BUILDER_EMAIL` | The git identity set in the checkout for a build or fix |
 | `FETCH_BASE_REF` | The base branch for a build, `main` by default |
 | `FETCH_GIT_BASE` | What clone URLs start with, `https://github.com/` by default; the tests point it at local repositories |

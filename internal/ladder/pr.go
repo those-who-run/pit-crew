@@ -61,6 +61,8 @@ type Status struct {
 
 // Review is one submitted review of a pull request, as GitHub records it.
 type Review struct {
+	// ID is the review's id, as reviews.json carries it.
+	ID     int64
 	Author string
 	// State is APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED or PENDING.
 	State string
@@ -304,15 +306,23 @@ func (p Policy) ReReviews(pr PullRequest) int {
 }
 
 // MaintainerChangesAsked reports whether the maintainer's review asks for changes
-// at the head: the maintainer's newest review submitted at the head, leaving out
-// COMMENTED and PENDING ones, is CHANGES_REQUESTED, and it is newer than lastFix,
-// the builder's last fix answer (zero when there is none). A later APPROVED or
-// DISMISSED review from the maintainer at the same head cancels it. A review from
-// any other login, or at another commit, counts for nothing; with no Maintainer
-// configured nothing counts.
+// at the head; MaintainerChangesReview says which review.
 func (p Policy) MaintainerChangesAsked(reviews []Review, headSHA string, lastFix time.Time) bool {
+	_, ok := p.MaintainerChangesReview(reviews, headSHA, lastFix)
+	return ok
+}
+
+// MaintainerChangesReview returns the maintainer's review that asks for changes at
+// the head, and whether there is one: the maintainer's newest review submitted at
+// the head, leaving out COMMENTED and PENDING ones, is CHANGES_REQUESTED, and it is
+// newer than lastFix, the builder's last fix answer (zero when there is none). A
+// later APPROVED or DISMISSED review from the maintainer at the same head cancels
+// it. A review from any other login, or at another commit, counts for nothing; with
+// no Maintainer configured nothing counts. The poller's decision and the fix's task
+// statement both ask it.
+func (p Policy) MaintainerChangesReview(reviews []Review, headSHA string, lastFix time.Time) (Review, bool) {
 	if p.Maintainer == "" || headSHA == "" {
-		return false
+		return Review{}, false
 	}
 	var newest Review
 	found := false
@@ -328,7 +338,10 @@ func (p Policy) MaintainerChangesAsked(reviews []Review, headSHA string, lastFix
 			newest, found = r, true
 		}
 	}
-	return found && newest.State == "CHANGES_REQUESTED" && newest.SubmittedAt.After(lastFix)
+	if found && newest.State == "CHANGES_REQUESTED" && newest.SubmittedAt.After(lastFix) {
+		return newest, true
+	}
+	return Review{}, false
 }
 
 // ChecksGreen reports whether every required check on the head is green, and if not

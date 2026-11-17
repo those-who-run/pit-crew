@@ -90,7 +90,7 @@ func Gather(ctx context.Context, src Source, policy ladder.Policy, pr github.Pul
 			return out, err
 		}
 		for _, r := range reviews {
-			out.Reviews = append(out.Reviews, ladder.Review{Author: r.Author, State: r.State, CommitSHA: r.CommitSHA, SubmittedAt: r.SubmittedAt})
+			out.Reviews = append(out.Reviews, ladder.Review{ID: r.ID, Author: r.Author, State: r.State, CommitSHA: r.CommitSHA, SubmittedAt: r.SubmittedAt})
 		}
 	}
 	statuses, err := src.ListStatuses(ctx, pr.Repo, pr.HeadSHA)

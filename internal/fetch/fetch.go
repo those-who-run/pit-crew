@@ -61,6 +61,9 @@ type Config struct {
 	AgentRef  string
 	// Dir is the root of the volumes: data/, repo/ and agent/ under it.
 	Dir string
+	// Maintainer is the login whose review at the head a fix answers first; empty
+	// names no one.
+	Maintainer string
 	// BuilderName and BuilderEmail are the git identity set for a build or fix.
 	BuilderName  string
 	BuilderEmail string
@@ -84,6 +87,7 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		AgentRepo:    or(getenv("FETCH_AGENT_REPO"), "those-who-run/.github"),
 		AgentRef:     getenv("FETCH_AGENT_REF"),
 		Dir:          or(getenv("FETCH_DIR"), "/work"),
+		Maintainer:   getenv("FETCH_MAINTAINER"),
 		BuilderName:  getenv("FETCH_BUILDER_NAME"),
 		BuilderEmail: getenv("FETCH_BUILDER_EMAIL"),
 		GitBase:      or(getenv("FETCH_GIT_BASE"), "https://github.com/"),
@@ -366,7 +370,19 @@ func run(ctx context.Context, cfg Config, src Source, logger *slog.Logger) (int,
 			}
 			statement = reviewStatement(task, cfg.Dir, len(swapped) > 0)
 		} else {
-			statement = fixStatement(task, cfg.Dir, comments)
+			var asked []ladder.Review
+			for _, r := range reviews {
+				asked = append(asked, ladder.Review{ID: r.ID, Author: r.Author, State: r.State, CommitSHA: r.CommitSHA, SubmittedAt: r.SubmittedAt})
+			}
+			var thread []ladder.Comment
+			for _, c := range comments {
+				thread = append(thread, ladder.Comment{ID: c.ID, Author: c.Author, Body: c.Body, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt})
+			}
+			// A fix is the builder's own pull request, so its author is the builder.
+			policy := ladder.Policy{Maintainer: cfg.Maintainer, Builder: pr.Author}
+			_, lastFix := policy.FixRounds(ladder.PullRequest{Comments: thread})
+			review, byMaintainer := policy.MaintainerChangesReview(asked, pr.HeadSHA, lastFix)
+			statement = fixStatement(task, cfg.Dir, comments, review, byMaintainer)
 		}
 	}
 	for _, ref := range issues {
@@ -596,7 +612,10 @@ func buildStatement(task Task, dir string) string {
 		publish.BuildBodyForm(task.IssueRepo, task.Issue))
 }
 
-func fixStatement(task Task, dir string, comments []github.Comment) string {
+// fixStatement names what the fix answers. maintainer is the maintainer's review
+// that asks for changes at the head, as ladder.Policy.MaintainerChangesReview
+// finds it for the poller's decision, when found is true.
+func fixStatement(task Task, dir string, comments []github.Comment, maintainer ladder.Review, found bool) string {
 	var ids []string
 	for _, c := range comments {
 		for _, m := range ladder.ParseReviewMarkers(c.Body) {
@@ -605,10 +624,22 @@ func fixStatement(task Task, dir string, comments []github.Comment) string {
 			}
 		}
 	}
+	var answer string
+	if found {
+		answer = fmt.Sprintf("- The maintainer's review to answer is the one with id %d in reviews.json (CHANGES_REQUESTED at this head). Its inline comments are the entries of review-comments.json with review id %d.\n", maintainer.ID, maintainer.ID)
+	}
+	if len(ids) > 0 {
+		answer += fmt.Sprintf("- The reviewer's comment to answer is the comment with id %s in comments.json (the newest review of this head); earlier reviews and answers are there too.", strings.Join(ids, ", "))
+		if found {
+			answer += " Where the maintainer's review and the reviewer's disagree, the maintainer's comes first."
+		}
+		answer += "\n"
+	}
+	answer += "- reviews.json and review-comments.json hold the pull request's reviews and their inline comments.\n"
 	return fmt.Sprintf("## This task\n\n- Kind: fix, round %d of %d\n- Pull request: %s#%d, your own, on branch %s at head %s\n- Base: %s at %s\n%s"+
-		"- The review to answer is the comment with id %s in comments.json (the newest review of this head); earlier reviews and answers are there too. reviews.json and review-comments.json hold the pull request's reviews and their inline comments.\n"+
+		"%s"+
 		"- Follow the twr-fix-review skill at %s/agent/skills/twr-fix-review/SKILL.md. Commit fixes on the branch; never amend, rebase or force; do not push.\n"+
 		"- Write your answer, in the form the skill gives, to answer.md in the output folder. Do not add a marker; the publisher adds it.\n",
 		task.Round, ladder.MaxFixRounds, task.Repo, task.Number, task.Branch, task.HeadSHA, task.BaseRef, task.BaseSHA, common(task, dir),
-		strings.Join(ids, ", "), filepath.Join(dir, AgentDir))
+		answer, filepath.Join(dir, AgentDir))
 }
