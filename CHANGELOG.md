@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.8](https://github.com/those-who-run/pit-crew/compare/v0.1.7...v0.1.8) (2026-11-16)
+
+
+### Features
+
+* **fetch:** write a pull request's reviews and review comments to the data files ([#29](https://github.com/those-who-run/pit-crew/issues/29)) ([4df5924](https://github.com/those-who-run/pit-crew/commit/4df592403b28dd006bd38f99641e441f6a354062))
+* **ladder:** the maintainer's request for changes at the head starts a fix ([d1f6232](https://github.com/those-who-run/pit-crew/commit/d1f6232fa849faa554b16e4b1e65b9eb4c25470b))
+* **pit-crew:** the maintainer's request for changes at the head starts a fix ([#30](https://github.com/those-who-run/pit-crew/issues/30)) ([d1f6232](https://github.com/those-who-run/pit-crew/commit/d1f6232fa849faa554b16e4b1e65b9eb4c25470b))
+
 ## [0.1.7](https://github.com/those-who-run/pit-crew/compare/v0.1.6...v0.1.7) (2026-11-15)
 
 
